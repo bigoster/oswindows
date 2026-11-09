@@ -93,7 +93,12 @@ function app.create(win, opts, ctx)
         rows[#rows + 1] = { "Label", label and tostring(label) or "(none)" }
         rows[#rows + 1] = { "OS", tostring(safe(os.version) or "?") }
         rows[#rows + 1] = { "Uptime", fmtUptime(os.clock()) }
-        rows[#rows + 1] = { "Memory used", fmtBytes((collectgarbage("count") or 0) * 1024) }
+        -- collectgarbage does not exist on CC (Cobalt strips it), so it must
+        -- go through safe() like every other optional API below.
+        local memKb = safe(function() return collectgarbage("count") end)
+        if memKb then
+            rows[#rows + 1] = { "Memory used", fmtBytes((memKb or 0) * 1024) }
+        end
         local free = safe(fs.getFreeSpace, "/")
         local cap = safe(fs.getCapacity, "/")
         if free then

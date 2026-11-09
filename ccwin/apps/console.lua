@@ -343,7 +343,21 @@ function app.create(win, opts, ctx)
 
     local function resumeShell(...)
         if not co or coroutine.status(co) ~= "suspended" then return end
+
+        -- The global term redirect follows the focused window, so while this
+        -- console is in the background it points somewhere else (the native
+        -- term, i.e. straight over the desktop). Every byte the shell writes
+        -- happens synchronously inside this resume, so claim the redirect for
+        -- the duration of it and hand it back afterwards.
+        local prev = term.current()
+        if prev ~= termObj then pcall(term.redirect, termObj) end
+
         local ok, a = coroutine.resume(co, ...)
+
+        if prev ~= termObj and term.current() == termObj then
+            pcall(term.redirect, prev)
+        end
+
         if not ok then
             co, filter = nil, nil
             cursorBlink = false
@@ -448,7 +462,10 @@ function app.create(win, opts, ctx)
             if focused() then mark() end
             return
         end
-        if focused() then deliver("timer", id) end
+        -- Timers must reach the shell even when this window is in the
+        -- background: a program sleeping in an unfocused console would
+        -- otherwise never wake up, hanging the shell with no error at all.
+        deliver("timer", id)
     end
 
     function self:key(key)
@@ -493,16 +510,26 @@ function app.create(win, opts, ctx)
     end
 
     --- Everything wm does not route itself (peripherals, timers, ...).
+    --
+    -- Not gated on focus: a shell in the background must still receive
+    -- http/rednet/peripheral/disk events, or any program waiting for one
+    -- would hang silently forever. Input events are excluded below because
+    -- wm only routes those to the focused window.
     function self:feed(ev)
-        if not focused() then return end
         local name = ev[1]
+        -- Ctrl+T belongs to the console you are actually looking at.
+        if name == "terminate" and not focused() then return end
         if name == "mouse_click" or name == "mouse_up" or name == "mouse_drag"
             or name == "mouse_scroll" or name == "key" or name == "char"
             or name == "key_up" or name == "paste" or name == "term_resize"
             or name == "timer" then
             return
         end
-        deliver(name, table.unpack(ev, 1, ev.n or #ev))
+        -- ev[1] is the event name, which `name` already carries: the payload
+        -- starts at 2. Unpacking from 1 would hand the shell a duplicated
+        -- name as its first parameter (so `ch` in a radio message would be
+        -- "cee_radio_message" instead of the channel).
+        deliver(name, table.unpack(ev, 2, ev.n or #ev))
     end
 
     function self:close()
