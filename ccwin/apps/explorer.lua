@@ -1,0 +1,459 @@
+--- CC-Windows - File Explorer.
+local app = {}
+
+app.id = "explorer"
+app.name = "Files"
+app.icon = "folder"
+app.defaultSize = { 260, 170 }
+
+local widgets, icons, dialogs, theme, C
+local state
+
+local ROW_H = 13
+local TOOLBAR_H = 20
+local STATUS_H = 14
+
+local HOME = "/"
+
+--- Content size of a window (client area).
+local function dc_size(win)
+    if win.content then return win.content.w, win.content.h end
+    return 1, 1
+end
+
+local function sortEntries(items)
+    local dirs, files = {}, {}
+    for _, item in ipairs(items) do
+        if item.isDir then dirs[#dirs + 1] = item else files[#files + 1] = item end
+    end
+    table.sort(dirs, function(a, b) return a.name:lower() < b.name:lower() end)
+    table.sort(files, function(a, b) return a.name:lower() < b.name:lower() end)
+    local out = {}
+    for _, d in ipairs(dirs) do out[#out + 1] = d end
+    for _, f in ipairs(files) do out[#out + 1] = f end
+    return out
+end
+
+function app.create(win, opts, ctx)
+    widgets, icons, dialogs = ctx.widgets, ctx.icons, ctx.dialogs
+    theme, C = ctx.theme, ctx.theme.C
+    state = ctx.state
+
+    local self = {
+        path = (opts and opts.path) or HOME,
+        items = {},
+        offset = 0,
+        selected = nil,
+        hover = nil,
+        status = "",
+        caret = nil,
+    }
+
+    -------------------------------------------------------------------
+    -- listing
+    -------------------------------------------------------------------
+
+    local function refresh()
+        local list = {}
+        local ok, entries = pcall(fs.list, self.path)
+        if ok and entries then
+            for _, name in ipairs(entries) do
+                local full = fs.combine(self.path, name)
+                list[#list + 1] = {
+                    name = name,
+                    path = full,
+                    isDir = fs.isDir(full),
+                }
+            end
+        end
+        self.items = sortEntries(list)
+        self.offset = 0
+        self.selected = nil
+        win.dirty = true
+    end
+    self.refresh = refresh
+
+    local function visible(cw, ch)
+        local listH = ch - TOOLBAR_H - STATUS_H - 4
+        return math.max(1, math.floor(listH / ROW_H)), listH
+    end
+
+    local function navigate(path)
+        self.path = path
+        refresh()
+        if state and state.settings then
+            state.settings.lastPath = path
+            if state.save then state.save() end
+        end
+    end
+    self.navigate = navigate
+
+    local function isBinary(path)
+        local f = fs.open(path, "r")
+        if not f then return true end
+        local head = f.read(512) or ""
+        f.close()
+        return head:find("\0", 1, true) ~= nil
+    end
+
+    local function openItem(item)
+        if item.isDir then
+            navigate(item.path)
+        else
+            -- hand text files to the editor, everything else says hello
+            local editor = ctx.wm and ctx.wm.context().apps and ctx.wm.context().apps.editor
+            if editor and not isBinary(item.path) then
+                ctx.launch("editor", { path = item.path })
+            else
+                dialogs.open(win, {
+                    type = "confirm",
+                    title = item.name,
+                    message = "No application is registered\nfor this file type.\n\n" .. item.path,
+                    buttons = { "OK" },
+                })
+            end
+        end
+    end
+
+    -------------------------------------------------------------------
+    -- toolbar
+    -------------------------------------------------------------------
+
+    local function toolbarRects(cw)
+        local r = {}
+        local x = 4
+        r.back = { x, 3, 18, 14 }
+        x = x + 21
+        r.up = { x, 3, 18, 14 }
+        x = x + 21
+        r.home = { x, 3, 18, 14 }
+        x = x + 22
+        r.path = { x, 3, cw - x - 96, 14 }
+        x = cw - 92
+        r.newFolder = { x, 3, 44, 14 }
+        x = x + 46
+        r.newFile = { x, 3, 44, 14 }
+        return r
+    end
+
+    local history = {}
+    local histIndex = 0
+
+    local function pushHistory(path)
+        for i = #history, histIndex + 1, -1 do history[i] = nil end
+        history[#history + 1] = path
+        histIndex = #history
+    end
+
+    local realNavigate = navigate
+    navigate = function(path)
+        pushHistory(path)
+        realNavigate(path)
+    end
+    self.navigate = navigate
+
+    -- seed history
+    history[1] = self.path
+    histIndex = 1
+
+    -------------------------------------------------------------------
+    -- drawing
+    -------------------------------------------------------------------
+
+    local function hot(x, y, r)
+        return r and x >= r[1] and x < r[1] + r[3] and y >= r[2] and y < r[2] + r[4]
+    end
+
+    local function drawGlyph(dc, r, kind, enabled)
+        local face = (self.hover == kind) and C.faceHover or C.face
+        if not enabled then face = C.faceDown end
+        dc:fill(r[1], r[2], r[3], r[4], face)
+        dc:rect(r[1], r[2], r[3], r[4], self.hover == kind and C.accent or C.bevelDark)
+        local cx, cy = r[1] + math.floor(r[3] / 2), r[2] + math.floor(r[4] / 2)
+        local col = enabled and C.text or C.textMuted
+        if kind == "back" or kind == "up" then
+            local dir = (kind == "back") and -1 or -1
+            local dy = (kind == "up") and -1 or 0
+            if kind == "back" then
+                dc:line(cx + 3, cy, cx - 3, cy - 4, col)
+                dc:line(cx + 3, cy, cx - 3, cy + 4, col)
+                dc:fill(cx - 3, cy - 4, 1, 9, col)
+            else
+                dc:line(cx, cy + 4, cx - 4, cy, col)
+                dc:line(cx, cy + 4, cx + 4, cy, col)
+                dc:fill(cx - 4, cy, 9, 1, col)
+            end
+        elseif kind == "home" then
+            icons.draw(dc, "computer", cx - 4, cy - 4, 1)
+        end
+    end
+
+    function self:draw(dc, cw, ch)
+        dc:fill(0, 0, cw, ch, C.face)
+
+        -- toolbar band
+        theme.band(dc, 0, 0, cw, TOOLBAR_H, nil)
+        local r = toolbarRects(cw)
+        drawGlyph(dc, r.back, "back", histIndex > 1)
+        drawGlyph(dc, r.up, "up", self.path ~= "/" and self.path ~= "")
+        drawGlyph(dc, r.home, "home", true)
+
+        -- address bar
+        widgets.fieldDraw(dc, r.path[1], r.path[2], r.path[3], r.path[4],
+            { text = self.path, caret = #self.path, scroll = 0 }, self.caret, false)
+        dc:text(r.path[1] + 3, r.path[2] + 3, "", C.text)
+
+        -- new folder / new file
+        widgets.button(dc, r.newFolder[1], r.newFolder[2], r.newFolder[3], r.newFolder[4],
+            "Folder", { state = self.hover == "newFolder" and "hover" or nil })
+        widgets.button(dc, r.newFile[1], r.newFile[2], r.newFile[3], r.newFile[4],
+            "File", { state = self.hover == "newFile" and "hover" or nil })
+        self.rects = r
+
+        -- list area
+        local listY = TOOLBAR_H
+        local count, listH = visible(cw, ch)
+        local listW = cw - 14
+        theme.field(dc, 3, listY, listW, listH, false)
+        dc:pushClip(4, listY + 2, listW - 2, listH - 4)
+
+        local maxOffset = math.max(0, #self.items - count)
+        if self.offset > maxOffset then self.offset = maxOffset end
+
+        for i = 1, math.min(count, #self.items - self.offset) do
+            local item = self.items[i + self.offset]
+            local iy = listY + 2 + (i - 1) * ROW_H
+            local stateName = nil
+            if self.selected == i + self.offset then
+                stateName = "selected"
+            elseif self.hover == "row" .. (i + self.offset) then
+                stateName = "hover"
+            end
+            widgets.listRow(dc, 4, iy, listW - 2, ROW_H, stateName)
+            local colour = stateName == "selected" and C.white or C.text
+            if item.isDir then
+                icons.draw(dc, "folder", 6, iy + 2, 1)
+            else
+                icons.draw(dc, "file", 6, iy + 2, 1)
+            end
+            dc:text(18, iy + 2, widgets.ellipsis(item.name, listW - 40), colour)
+            if not item.isDir then
+                local size = "-"
+                local ok, sz = pcall(fs.getSize, item.path)
+                if ok then size = widgets.formatBytes(sz) end
+                local sw = dc:textWidth(size)
+                dc:text(listW - 6 - sw, iy + 2, size, stateName == "selected" and C.white or C.textMuted)
+            end
+        end
+        dc:popClip()
+
+        if #self.items > count then
+            widgets.scrollV(dc, 3 + listW - 10, listY + 2, 8, listH - 4,
+                self.offset, #self.items, count, self.hover == "scroll")
+        end
+
+        -- status bar
+        local sy = ch - STATUS_H
+        dc:fill(0, sy, cw, STATUS_H, C.face)
+        dc:fill(0, sy, cw, 1, C.bevelMid)
+        local label = self.status
+        if label == "" then
+            label = tostring(#self.items) .. " items"
+            if self.selected and self.items[self.selected] then
+                label = label .. "   |   " .. self.items[self.selected].name
+            end
+        end
+        dc:text(4, sy + 3, widgets.ellipsis(label, cw - 8), C.textMuted)
+    end
+
+    -------------------------------------------------------------------
+    -- input
+    -------------------------------------------------------------------
+
+    local function rowAtY(y, ch)
+        local listY = TOOLBAR_H
+        if y < listY + 2 then return nil end
+        local count = visible(0, ch)
+        local index = math.floor((y - listY - 2) / ROW_H) + 1 + self.offset
+        if index < 1 or index > #self.items then return nil end
+        if index > self.offset + count then return nil end
+        return index
+    end
+
+    local function toolbarHover(x, y, cw)
+        local r = toolbarRects(cw)
+        if hot(x, y, r.back) then return "back" end
+        if hot(x, y, r.up) then return "up" end
+        if hot(x, y, r.home) then return "home" end
+        if hot(x, y, r.newFolder) then return "newFolder" end
+        if hot(x, y, r.newFile) then return "newFile" end
+        return nil
+    end
+
+    local function askNew(kind)
+        dialogs.open(win, {
+            type = "prompt",
+            title = kind == "folder" and "New folder" or "New file",
+            label = kind == "folder" and "Folder name:" or "File name:",
+            initial = kind == "folder" and "New folder" or "new.txt",
+            onSubmit = function(text)
+                if text and text ~= "" then
+                    local full = fs.combine(self.path, text)
+                    local ok, err
+                    if kind == "folder" then
+                        ok, err = pcall(fs.makeDir, full)
+                    else
+                        ok, err = pcall(function()
+                            if not fs.exists(full) then
+                                local f = fs.open(full, "w")
+                                f.close()
+                            end
+                        end)
+                    end
+                    if not ok then
+                        self.status = "Error: " .. tostring(err)
+                    else
+                        self.status = ""
+                        refresh()
+                    end
+                end
+            end,
+        })
+    end
+
+    local function askDelete(item)
+        dialogs.open(win, {
+            type = "confirm",
+            title = "Delete",
+            message = "Delete '" .. item.name .. "'?",
+            buttons = { "Delete", "Cancel" },
+            onResult = function(n)
+                if n == 1 then
+                    local ok, err = pcall(fs.delete, item.path)
+                    if ok then
+                        self.status = ""
+                        refresh()
+                    else
+                        self.status = "Error: " .. tostring(err)
+                    end
+                end
+            end,
+        })
+    end
+
+    function self:click(x, y, button, double)
+        local cw, ch = dc_size(win)
+        local r = self.rects or toolbarRects(cw)
+
+        if button == 3 then
+            local index = rowAtY(y, ch)
+            if index and self.items[index] then askDelete(self.items[index]) end
+            return true
+        end
+        if button ~= 1 then return true end
+
+        if hot(x, y, r.back) then
+            if histIndex > 1 then
+                histIndex = histIndex - 1
+                realNavigate(history[histIndex])
+            end
+            return true
+        elseif hot(x, y, r.up) then
+            local parent = fs.getDir(self.path)
+            if parent == "" then parent = "/" end
+            navigate(parent)
+            return true
+        elseif hot(x, y, r.home) then
+            navigate(HOME)
+            return true
+        elseif hot(x, y, r.newFolder) then
+            askNew("folder")
+            return true
+        elseif hot(x, y, r.newFile) then
+            askNew("file")
+            return true
+        end
+
+        local index = rowAtY(y, ch)
+        if index then
+            self.status = ""
+            if double then
+                self.selected = index
+                openItem(self.items[index])
+            else
+                self.selected = index
+            end
+            win.dirty = true
+            return true
+        end
+        self.selected = nil
+        win.dirty = true
+        return true
+    end
+
+    function self:drag(x, y)
+        local cw, ch = dc_size(win)
+        local newHover = toolbarHover(x, y, cw)
+        local index = rowAtY(y, ch)
+        if index and y >= TOOLBAR_H and y < ch - STATUS_H then
+            newHover = "row" .. index
+        end
+        if newHover ~= self.hover then
+            self.hover = newHover
+            win.dirty = true
+            return true
+        end
+        return false
+    end
+
+    function self:scroll(x, y, dir)
+        local cw, ch = dc_size(win)
+        local count = select(1, visible(cw, ch))
+        self.offset = widgets.scrollWheel(self.offset, #self.items, count, dir, 3)
+        win.dirty = true
+        return true
+    end
+
+    function self:key(key)
+        local count = select(1, visible(dc_size(win)))
+        if key == keys.f5 then
+            refresh()
+            return true
+        elseif key == keys.delete and self.selected and self.items[self.selected] then
+            askDelete(self.items[self.selected])
+            return true
+        elseif key == keys.enter and self.selected and self.items[self.selected] then
+            openItem(self.items[self.selected])
+            return true
+        elseif key == keys.up then
+            if self.selected and self.selected > 1 then self.selected = self.selected - 1 end
+            if (self.selected or 1) <= self.offset then
+                self.offset = math.max(0, (self.selected or 1) - 1)
+            end
+            win.dirty = true
+            return true
+        elseif key == keys.down then
+            if self.selected and self.selected < #self.items then
+                self.selected = self.selected + 1
+            elseif not self.selected and #self.items > 0 then
+                self.selected = 1
+            end
+            if self.selected and self.selected > self.offset + count then
+                self.offset = self.selected - count
+            end
+            win.dirty = true
+            return true
+        elseif key == keys.backspace then
+            local parent = fs.getDir(self.path)
+            if parent == "" then parent = "/" end
+            if parent ~= self.path then navigate(parent) end
+            return true
+        end
+        return false
+    end
+
+    refresh()
+    return self
+end
+
+return app
