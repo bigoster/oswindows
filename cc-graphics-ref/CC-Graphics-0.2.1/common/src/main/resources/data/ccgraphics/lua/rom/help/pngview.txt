@@ -1,4 +1,0 @@
-pngview displays a PNG image using graphics mode 2 (256-color).
-ex:
-"pngview <image.png>" displays the image on screen.
-Press Enter to exit.
