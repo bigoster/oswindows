@@ -31,6 +31,7 @@ local DEFAULTS = {
     wallpaper = "landscape",
     clockSeconds = false,
     lastPath = "/",
+    iconSize = "medium",
 }
 
 local SETTINGS_PATH = path("settings.cfg")
@@ -72,6 +73,7 @@ local icons = dofile(path("core/icons.lua"))
 local widgets = dofile(path("core/widgets.lua"))
 local dialogs = dofile(path("core/dialogs.lua"))
 local backdrop = dofile(path("core/backdrop.lua"))
+local menu = dofile(path("core/menu.lua"))
 local wm = dofile(path("core/wm.lua"))
 local desktop = dofile(path("core/desktop.lua"))
 
@@ -152,6 +154,13 @@ local function boot()
     widgets.attach(gfx, theme, icons)
     dialogs.attach(gfx, theme, widgets, icons)
     backdrop.attach(gfx, theme)
+    menu.attach {
+        gfx = gfx,
+        theme = theme,
+        widgets = widgets,
+        icons = icons,
+        wm = wm,
+    }
 
     wm.attach {
         gfx = gfx,
@@ -159,6 +168,7 @@ local function boot()
         widgets = widgets,
         dialogs = dialogs,
         icons = icons,
+        menu = menu,
         apps = apps,
         state = state,
     }
@@ -170,6 +180,8 @@ local function boot()
         icons = icons,
         wm = wm,
         backdrop = backdrop,
+        dialogs = dialogs,
+        menu = menu,
         state = state,
         settings = settings,
     }
@@ -196,7 +208,7 @@ local function boot()
     -- at window geometry without simulating every pixel of a click.
     if rawget(_G, "CCWIN_DEBUG") then
         _G.CCWIN_DEBUG_STATE = {
-            wm = wm, desktop = desktop, apps = apps,
+            wm = wm, desktop = desktop, apps = apps, menu = menu,
             state = state, gfx = gfx, theme = theme, native = native,
         }
     end

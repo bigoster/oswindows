@@ -70,6 +70,10 @@ function app.create(win, opts, ctx)
     local co, filter = nil, nil
     local prevRedirect = nil
     local termObj = {}
+    -- A console opened from a desktop shortcut runs that program first and
+    -- then drops to a shell, the way a terminal window would.
+    local startupProgram = opts and opts.program or nil
+    local ranProgram = false
 
     local function mark() win.dirty = true end
 
@@ -365,6 +369,7 @@ function app.create(win, opts, ctx)
                 -- Ctrl+T at the prompt: stock CraftOS kills the shell (and
                 -- the computer). Here the window survives, we just start a
                 -- fresh shell in it.
+                ranProgram = false
                 startShell()
             else
                 echo("shell: " .. tostring(a), 14)
@@ -373,8 +378,15 @@ function app.create(win, opts, ctx)
         elseif coroutine.status(co) == "dead" then
             co, filter = nil, nil
             cursorBlink = false
-            echo("[Process exited]", 14)
-            mark()
+            if ranProgram then
+                -- A shortcut's program finished; hand the window back to a
+                -- shell instead of leaving it dead.
+                ranProgram = false
+                startShell()
+            else
+                echo("[Process exited]", 14)
+                mark()
+            end
         else
             filter = a
         end
@@ -388,6 +400,11 @@ function app.create(win, opts, ctx)
 
     startShell = function()
         local path = "/rom/programs/shell.lua"
+        if startupProgram then
+            path = startupProgram
+            startupProgram = nil
+            ranProgram = true
+        end
         local f = fs.open(path, "r")
         if not f then
             echo("Cannot open " .. path, 14)

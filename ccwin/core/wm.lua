@@ -4,7 +4,7 @@
 -- chrome, and routes input events to whichever application is interested.
 local wm = {}
 
-local gfx, theme, widgets, dialogs, icons, C
+local gfx, theme, widgets, dialogs, icons, menu, C
 local apps, state, desktop
 local rootDC
 
@@ -28,6 +28,7 @@ wm.dirty = true
 
 function wm.attach(d)
     gfx, theme, widgets, dialogs, icons = d.gfx, d.theme, d.widgets, d.dialogs, d.icons
+    menu = d.menu
     C = theme.C
     apps, state = d.apps, d.state
     rootDC = gfx.newDC(0, 0, gfx.size())
@@ -265,6 +266,7 @@ function wm.context()
             widgets = widgets,
             dialogs = dialogs,
             icons = icons,
+            menu = menu,
             apps = apps,
             launch = function(appId, opts) return wm.create(appId, opts) end,
         }
@@ -391,6 +393,8 @@ function wm.render()
         if win.state ~= "min" then wm.drawWindow(win) end
     end
     if desktop then desktop.drawFront(rootDC) end
+    -- Context menus float above everything, including the taskbar.
+    if menu then menu.draw(rootDC) end
     gfx.present()
     wm.dirty = false
 end
@@ -404,6 +408,12 @@ local function isDoubleClick(x, y)
 end
 
 local function handleTitleClick(win, x, y, button, double)
+    -- Right-clicking a title bar (or its buttons) opens the window menu.
+    if button == 2 then
+        wm.focus(win)
+        if desktop then desktop.windowMenu(win, x, y) end
+        return true
+    end
     local btns = titleButtons(win)
     if hitRect(btns.close, x, y) then
         if button == 1 then wm.close(win) end
@@ -438,12 +448,32 @@ end
 local function onMouseDown(x, y, button, double)
     state.pointer.x, state.pointer.y = x, y
 
+    -- An open context menu owns the mouse until it is dismissed; the click
+    -- is swallowed either way, so nothing underneath reacts to it.
+    if menu and menu.isOpen() then
+        if button == 2 then
+            menu.close()
+            wm.dirty = true
+            return
+        end
+        if menu.click(x, y, button) then
+            wm.dirty = true
+            return
+        end
+    end
+
+    -- A modal dialog owned by the desktop swallows every click.
+    if desktop and desktop.dialogClick(x, y, button, double) then
+        wm.dirty = true
+        return
+    end
+
     -- taskbar / start menu sit above everything
     if desktop and desktop.barClick(x, y, button, double) then return end
 
     local win = wm.windowAt(x, y)
     if not win then
-        if desktop and desktop.iconClick(x, y, button, double) then return end
+        if desktop and desktop.mouseDown(x, y, button, double) then return end
         if focused then focused = nil; wm.dirty = true end
         return
     end
@@ -492,6 +522,7 @@ local function onMouseUp(x, y, button)
         pressed = nil
         wm.dirty = true
     end
+    if desktop and desktop.mouseUp(x, y, button) then return end
     local win = focused
     if win and not win.crashed and win.instance and win.instance.up then
         local cx, cy = x - win.content.x, y - win.content.y
@@ -520,6 +551,7 @@ local function onMouseDrag(x, y, button)
         wm.dirty = true
         return
     end
+    if desktop and desktop.mouseDrag(x, y, button) then return end
     local win = focused
     if win and not win.crashed and win.instance and win.instance.drag then
         local cx, cy = x - win.content.x, y - win.content.y
@@ -529,6 +561,8 @@ end
 
 local function onMouseScroll(dir, x, y)
     state.pointer.x, state.pointer.y = x, y
+    if menu and menu.isOpen() then menu.close() end
+    if desktop and desktop.dialogOpen() then return end
     if desktop and desktop.barScroll(dir, x, y) then return end
     local win = wm.windowAt(x, y)
     if not win then
@@ -558,34 +592,64 @@ function wm.handle(ev)
         onMouseScroll(ev[2], ev[3], ev[4])
         wm.dirty = true
     elseif name == "key" then
-        local win = focused
-        if win then
-            if win.dialog then
-                dialogs.key(win, ev[2])
-            elseif not win.crashed then
-                wm.call(win, "key", ev[2])
+        if menu and menu.isOpen() and menu.key(ev[2]) then
+            -- consumed by the open menu
+        elseif desktop and desktop.dialogOpen() and desktop.key(ev[2]) then
+            -- consumed by a modal desktop dialog
+        else
+            local win = focused
+            if win then
+                if win.dialog then
+                    dialogs.key(win, ev[2])
+                elseif not win.crashed then
+                    wm.call(win, "key", ev[2])
+                end
+            elseif desktop then
+                desktop.key(ev[2])
             end
         end
         wm.dirty = true
     elseif name == "char" then
-        local win = focused
-        if win then
-            if win.dialog then
-                dialogs.char(win, ev[2])
-            elseif not win.crashed then
-                wm.call(win, "char", ev[2])
+        if menu and menu.isOpen() then
+            menu.close()
+        elseif desktop and desktop.dialogOpen() and desktop.char(ev[2]) then
+            -- consumed by a modal desktop dialog
+        else
+            local win = focused
+            if win then
+                if win.dialog then
+                    dialogs.char(win, ev[2])
+                elseif not win.crashed then
+                    wm.call(win, "char", ev[2])
+                end
+            elseif desktop then
+                desktop.char(ev[2])
             end
         end
         wm.dirty = true
     elseif name == "key_up" or name == "paste" then
-        local win = focused
-        if win and not win.crashed and not win.dialog then
+        if menu and menu.isOpen() then
+            -- menus swallow typing
+        elseif desktop and desktop.dialogOpen() then
+            -- a modal desktop dialog swallows key_up, and pasting a path
+            -- into its text field is exactly what a user wants
             if name == "paste" then
-                for ch in tostring(ev[2]):gmatch(".") do
-                    wm.call(win, "char", ch)
+                for ch in tostring(ev[2]):gmatch(".") do desktop.char(ch) end
+            end
+        else
+            local win = focused
+            if win and not win.crashed then
+                if name == "paste" then
+                    for ch in tostring(ev[2]):gmatch(".") do
+                        if win.dialog then
+                            dialogs.char(win, ch)
+                        else
+                            wm.call(win, "char", ch)
+                        end
+                    end
+                elseif not win.dialog then
+                    wm.call(win, "key_up", ev[2])
                 end
-            else
-                wm.call(win, "key_up", ev[2])
             end
         end
         wm.dirty = true

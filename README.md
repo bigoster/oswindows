@@ -39,7 +39,7 @@ Or without saving a copy of the installer:
 wget run https://raw.githubusercontent.com/bigoster/oswindows/main/install.lua
 ```
 
-`install.lua` fetches all 17 files from the repository, checks that each one
+`install.lua` fetches every file from the repository, checks that each one
 really is a compilable Lua chunk (so a truncated download or an HTML error
 page is caught rather than installed), and only then puts it in place.
 Re-running it upgrades an existing install in place and never touches
@@ -67,9 +67,10 @@ the exit status.
     │   ├── theme.lua     (light/dark palettes, paint palette, HSV helper)
     │   ├── icons.lua     (pixel icon definitions)
     │   ├── widgets.lua   (buttons, toggles, text fields, scrollbars, ...)
-    │   ├── dialogs.lua   (message boxes, file pickers, menus)
+    │   ├── dialogs.lua   (message boxes, file pickers)
+    │   ├── menu.lua      (right-click context menus and submenus)
     │   ├── wm.lua        (window list, z-order, focus, drag/resize)
-    │   ├── desktop.lua   (wallpaper, icons, taskbar, start menu, clock)
+    │   ├── desktop.lua   (shortcuts, wallpaper, taskbar, start menu, clock)
     │   └── backdrop.lua  (wallpaper renderers)
     └── apps/
         ├── explorer.lua  (Files)
@@ -88,7 +89,17 @@ launching it from a subdirectory still works.
 **Desktop**
 
 - Pixel wallpaper (Landscape / Gradient / Solid, with selectable solid colour)
-- Draggable-free desktop icon grid with single-click select and double-click open
+- **Shortcut links**: on first boot the OS writes a `.lnk` file per installed
+  program into `/desktop`, and the desktop shows them as icons — see
+  [Desktop shortcuts](#desktop-shortcuts)
+- Icon grid with single-click select and double-click open; icons can be
+  **dragged to any position** and the new position is written back to the
+  `.lnk`, so it survives a reboot
+- **Right-click context menus** everywhere: on the desktop (View / Sort by /
+  Refresh / New ▸ Shortcut / Personalize), on an icon (Open / Rename / Delete /
+  Properties) and on a window title bar or taskbar button (Minimise / Maximize /
+  Close)
+- Icon views: Large / Medium / Small icons (View menu), plus Sort by Name
 - Taskbar with Start menu, running-window buttons and a live clock
   (12/24-hour, optional seconds)
 - Light and Dark themes, applied instantly to the whole palette
@@ -96,7 +107,8 @@ launching it from a subdirectory still works.
 **Window manager**
 
 - Move by dragging the title bar, resize by dragging the bottom-right corner
-- Minimise / maximise / close title-bar buttons, double-click title to maximise
+- Minimise / maximise / close title-bar buttons, double-click title to maximise,
+  right-click the title bar for the window menu
 - Focus follows click, z-order raise, cascading placement
 - Crashed apps are caught and shown as a crashed window instead of killing the OS
 
@@ -111,8 +123,38 @@ launching it from a subdirectory still works.
 | **Settings** | Theme, wallpaper, clock format; persisted to `/ccwin/settings.cfg` |
 | **System** | Computer ID, label, OS version, free/total disk space, peripheral list |
 
-**Dialogs** — message boxes, confirmation prompts, file open/save pickers and
-context menus are implemented centrally in `core/dialogs.lua`.
+**Dialogs** — message boxes, confirmation prompts and file open/save pickers are
+implemented centrally in `core/dialogs.lua`; right-click context menus live in
+`core/menu.lua`.
+
+## Desktop shortcuts
+
+Shortcuts are real files, one per link — the CC equivalent of a Windows `.lnk`:
+
+```
+/desktop/Console.lnk      -- a small serialised table
+/desktop/Notepad.lnk
+```
+
+Each file holds `{ kind, target, label, icon, x, y }`. `kind` is `"app"` when
+`target` is an application id (`console`, `paint`, …) and `"file"` when it is a
+path. `x, y` is the icon's pixel position, which is what makes moving icons
+persist across a reboot: the folder is the source of truth, not an in-memory
+list.
+
+- **Seeding.** On first boot (guarded by `/ccwin/desktop.seeded`, deliberately
+  *outside* `/desktop` so deleting every shortcut stays deleted) the OS creates
+  one link per installed program, laid out column-major from the top-left.
+- **New ▸ Shortcut.** Right-click the desktop → New ▸ Shortcut opens a file
+  picker; choosing a file drops a link on the next free grid cell.
+- **Open.** Double-clicking a link opens its target: folders go to Files, `.lua`
+  files run in a Console (that window runs the program first, then drops to a
+  shell), `.nfp`/`.png` go to Paint, everything else to Notepad. A link whose
+  program no longer exists is deleted when you open it.
+- **Arrange / remove.** Drag an icon to move it; right-click → Rename / Delete
+  (with a confirmation) / Properties, or select and press `F2` / `Delete`.
+- **Views.** View ▸ Large / Medium / Small icons changes the grid cell size;
+  Sort by ▸ Name re-flows the icons into column order.
 
 ## Console specifics
 
@@ -143,6 +185,13 @@ The Console is the most involved piece: it hosts the unmodified
 
 ## Development
 
+### Writing apps
+
+**[Writing programs for CC-Windows](docs/writing-apps.md)** is the tutorial for
+adding software: console programs vs. GUI apps, the app module contract, every
+callback, drawing/colour/widget/dialog APIs, timers and background events, and
+a complete worked example.
+
 All files pass `luac52 -p` (Lua 5.2 syntax check). The code targets Lua 5.2 —
 no `//` operator, no `table.pack`/`table.unpack` beyond what CC provides,
 `bit32` is fine.
@@ -159,6 +208,12 @@ scripted mouse/keyboard events. It asserts boot sanity, opens every app from its
 desktop icon, runs a command in the console shell, switches theme, powers off
 and verifies that `settings.cfg` was written and that graphics mode was left
 cleanly — then reboots into the saved settings and checks they were read back.
+
+`run5` covers the desktop shell itself: the seeded `/desktop/*.lnk` files and
+their positions, the three context menus and their submenus, Escape dismissal,
+delete-with-confirmation, New ▸ Shortcut end to end (including double-clicking
+the new link and watching its program run), dragging an icon and finding the new
+position persisted on disk, and switching icon views.
 
 ## Licence
 
