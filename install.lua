@@ -43,6 +43,7 @@ local FILES = {
     { "ccwin/core/font.lua",     "/ccwin/core/font.lua" },
     { "ccwin/core/gfx.lua",      "/ccwin/core/gfx.lua" },
     { "ccwin/core/icons.lua",    "/ccwin/core/icons.lua" },
+    { "ccwin/core/menu.lua",     "/ccwin/core/menu.lua" },
     { "ccwin/core/theme.lua",    "/ccwin/core/theme.lua" },
     { "ccwin/core/widgets.lua",  "/ccwin/core/widgets.lua" },
     { "ccwin/core/wm.lua",       "/ccwin/core/wm.lua" },
