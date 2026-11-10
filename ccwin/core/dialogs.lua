@@ -127,7 +127,7 @@ function dialogs.draw(win, dc)
         for i, label in ipairs(spec.buttons or { "OK" }) do
             local r = { bx, by, BTN_W, BTN_H }
             spec.btnRects[i] = r
-            drawButton(dc, r[1], r[2], r[3], r[4], i == 1, spec.hot == i)
+            drawButton(dc, r[1], r[2], r[3], label, i == 1, spec.hot == i)
             bx = bx + BTN_W + 6
         end
 

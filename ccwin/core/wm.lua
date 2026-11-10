@@ -269,6 +269,14 @@ function wm.context()
             menu = menu,
             apps = apps,
             launch = function(appId, opts) return wm.create(appId, opts) end,
+            -- The context is built before setDesktop runs, so this closure
+            -- reads the upvalue lazily. Explorer uses it for "Create link".
+            shortcuts = {
+                create = function(spec)
+                    if not desktop then return nil end
+                    return desktop.createShortcut(spec)
+                end,
+            },
         }
     end
     return context

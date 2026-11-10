@@ -362,6 +362,33 @@ local function refresh()
     mark()
 end
 
+--- Create a shortcut on the desktop, select it and redraw.
+-- Public so applications can drop a link here (Explorer's "Create link");
+-- the label and the icon are derived from the target when omitted.
+function desktop.createShortcut(spec)
+    spec = spec or {}
+    if not spec.target then return nil end
+    local kind = spec.kind == "app" and "app" or "file"
+    local label, icon = spec.label, spec.icon
+    if kind == "app" then
+        local app = appDef(spec.target)
+        if not label then label = (app and app.name) or spec.target end
+        if not icon then icon = (app and app.icon) or "file" end
+    else
+        if not label then label = fs.getName(spec.target):gsub("%.[%w]+$", "") end
+        if not icon then icon = iconFor(spec.target) end
+    end
+    -- the folder may have been emptied (or deleted) by the user
+    fs.makeDir(SHORTCUT_DIR)
+    local e = createShortcut {
+        kind = kind, target = spec.target, label = label, icon = icon,
+    }
+    selectedFile = e.file
+    layoutIcons()
+    mark()
+    return e
+end
+
 local function setIconSize(id)
     if not SIZES[id] or settings.iconSize == id then return end
     settings.iconSize = id
@@ -394,16 +421,7 @@ local function newShortcut()
         title = "New Shortcut",
         path = "/",
         onPick = function(path)
-            local label = fs.getName(path):gsub("%.[%w]+$", "")
-            local e = createShortcut {
-                kind = "file",
-                target = path,
-                label = label,
-                icon = iconFor(path),
-            }
-            selectedFile = e.file
-            layoutIcons()
-            mark()
+            desktop.createShortcut { kind = "file", target = path }
         end,
     }
 end

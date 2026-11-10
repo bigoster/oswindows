@@ -233,12 +233,23 @@ Called once per window. **Must return the instance table** (conventionally
   | `ctx.dialogs` | modal dialogs |
   | `ctx.icons` | 8×8 icon drawing |
   | `ctx.apps` | table of all loaded app modules, keyed by id |
+  | `ctx.menu` | right-click context menus (section 10) |
+  | `ctx.shortcuts.create(spec)` | drop a shortcut on the desktop (see below) |
   | `ctx.launch(appId, opts)` | open a window for another app |
 
 Cross-app example, from `explorer.lua`:
 
 ```lua
 ctx.launch("editor", { path = item.path })
+```
+
+`ctx.shortcuts.create` is how an app adds a link to the desktop without
+knowing anything about `/desktop`:
+
+```lua
+local e = ctx.shortcuts.create { kind = "file", target = item.path }
+-- e.file, e.label, e.icon, e.x, e.y; label/icon are derived when omitted
+-- kind = "app" for a program id, "file" for a path
 ```
 
 ---

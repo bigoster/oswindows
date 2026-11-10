@@ -47,6 +47,10 @@ function app.create(win, opts, ctx)
         hover = nil,
         status = "",
         caret = nil,
+        press = nil,        -- row held down, may become a drag
+        dragging = nil,     -- name of the file being moved
+        dropTarget = nil,   -- folder row a dragged file would land in
+        dragX = nil, dragY = nil,
     }
 
     -------------------------------------------------------------------
@@ -226,10 +230,15 @@ function app.create(win, opts, ctx)
             local stateName = nil
             if self.selected == i + self.offset then
                 stateName = "selected"
-            elseif self.hover == "row" .. (i + self.offset) then
+            elseif self.hover == "row" .. (i + self.offset)
+                or self.dropTarget == i + self.offset then
                 stateName = "hover"
             end
             widgets.listRow(dc, 4, iy, listW - 2, ROW_H, stateName)
+            if self.dropTarget == i + self.offset then
+                -- the folder a dragged file would land in
+                dc:rect(4, iy, listW - 2, ROW_H, C.accent)
+            end
             local colour = stateName == "selected" and C.white or C.text
             if item.isDir then
                 icons.draw(dc, "folder", 6, iy + 2, 1)
@@ -264,6 +273,19 @@ function app.create(win, opts, ctx)
             end
         end
         dc:text(4, sy + 3, widgets.ellipsis(label, cw - 8), C.textMuted)
+
+        -- drag ghost: the name of the file being moved, following the cursor
+        if self.dragging then
+            local text = widgets.ellipsis(self.dragging, cw - 12)
+            local gw = dc:textWidth(text) + 8
+            local gx, gy = self.dragX or 0, self.dragY or 0
+            if gx + gw > cw then gx = math.max(0, cw - gw) end
+            if gy + 13 > ch then gy = math.max(0, ch - 13) end
+            dc:fill(gx + 2, gy + 2, gw, 13, C.shadow)
+            dc:fill(gx, gy, gw, 13, C.face)
+            dc:rect(gx, gy, gw, 13, C.accent)
+            dc:text(gx + 4, gy + 3, text, C.text)
+        end
     end
 
     -------------------------------------------------------------------
@@ -341,6 +363,36 @@ function app.create(win, opts, ctx)
         })
     end
 
+    --- Drop a shortcut to this item on the desktop.
+    local function createLink(item)
+        if not ctx.shortcuts or not ctx.shortcuts.create then
+            self.status = "Shortcuts are not available"
+            win.dirty = true
+            return
+        end
+        local e = ctx.shortcuts.create { kind = "file", target = item.path }
+        self.status = e and "Link created on the desktop"
+            or "Error: could not create link"
+        win.dirty = true
+    end
+
+    --- Right-click menu for a row (screen coordinates).
+    local function openItemMenu(item, sx, sy)
+        if not ctx.menu then return end
+        ctx.menu.open {
+            x = sx, y = sy,
+            items = {
+                { label = "Open", icon = item.isDir and "folder" or "file",
+                  onPick = function() openItem(item) end },
+                { label = "Create link", icon = "file",
+                  onPick = function() createLink(item) end },
+                { sep = true },
+                { label = "Delete",
+                  onPick = function() askDelete(item) end },
+            },
+        }
+    end
+
     function self:click(x, y, button, double)
         local cw, ch = dc_size(win)
         local r = self.rects or toolbarRects(cw)
@@ -350,7 +402,21 @@ function app.create(win, opts, ctx)
             if index and self.items[index] then askDelete(self.items[index]) end
             return true
         end
+        if button == 2 then
+            -- right-click a row: open it, link it or delete it
+            local index = rowAtY(y, ch)
+            if index and self.items[index] then
+                self.selected = index
+                openItemMenu(self.items[index],
+                    win.content.x + x, win.content.y + y)
+                win.dirty = true
+            end
+            return true
+        end
         if button ~= 1 then return true end
+        self.press = nil
+        self.dragging = nil
+        self.dropTarget = nil
 
         if hot(x, y, r.back) then
             if histIndex > 1 then
@@ -377,11 +443,12 @@ function app.create(win, opts, ctx)
         local index = rowAtY(y, ch)
         if index then
             self.status = ""
+            self.selected = index
             if double then
-                self.selected = index
                 openItem(self.items[index])
             else
-                self.selected = index
+                -- held down: may turn into a drag onto a folder
+                self.press = { index = index, x0 = x, y0 = y, moved = false }
             end
             win.dirty = true
             return true
@@ -391,8 +458,56 @@ function app.create(win, opts, ctx)
         return true
     end
 
+    --- Hover tracking, and moving a row onto a folder while it is held.
     function self:drag(x, y)
         local cw, ch = dc_size(win)
+
+        if self.press then
+            local dx, dy = x - self.press.x0, y - self.press.y0
+            if not self.press.moved and (math.abs(dx) >= 4 or math.abs(dy) >= 4) then
+                -- past the drag threshold: this is now a move, not a click
+                local item = self.items[self.press.index]
+                if item then
+                    self.press.moved = true
+                    self.dragging = item.name
+                    self.dropTarget = nil
+                    self.status = "Drop on a folder to move"
+                    win.dirty = true
+                else
+                    self.press = nil
+                end
+            end
+
+            if self.press and self.press.moved then
+                local item = self.items[self.press.index]
+                if not item then
+                    self.press, self.dragging, self.dropTarget = nil, nil, nil
+                    self.status = ""
+                    win.dirty = true
+                    return true
+                end
+                self.dragX, self.dragY = x, y
+                local target = rowAtY(y, ch)
+                if target then
+                    local it = self.items[target]
+                    -- only a real folder counts, and never into itself
+                    if not it or not it.isDir or target == self.press.index
+                        or (item.isDir and it.path:find(item.path .. "/", 1, true)) then
+                        target = nil
+                    end
+                end
+                if target ~= self.dropTarget then
+                    self.dropTarget = target
+                    self.status = target
+                        and ("Move to " .. self.items[target].name)
+                        or "Drop on a folder to move"
+                    win.dirty = true
+                end
+                win.dirty = true
+                return true
+            end
+        end
+
         local newHover = toolbarHover(x, y, cw)
         local index = rowAtY(y, ch)
         if index and y >= TOOLBAR_H and y < ch - STATUS_H then
@@ -404,6 +519,36 @@ function app.create(win, opts, ctx)
             return true
         end
         return false
+    end
+
+    --- Release: commit the move if a folder was under the cursor.
+    function self:up(x, y, button)
+        local p = self.press
+        if not p then return false end
+        self.press = nil
+        if button ~= 1 or not p.moved then
+            win.dirty = true
+            return true
+        end
+
+        local src = self.items[p.index]
+        local dst = self.dropTarget and self.items[self.dropTarget] or nil
+        self.dragging = nil
+        self.dropTarget = nil
+
+        if src and dst and dst.isDir then
+            local to = fs.combine(dst.path, src.name)
+            local ok, err = pcall(fs.move, src.path, to)
+            if ok and fs.exists(to) then
+                self.status = "Moved " .. src.name .. " to " .. dst.name
+            else
+                self.status = "Error: " .. tostring(ok and "could not move" or err)
+            end
+        else
+            self.status = ""
+        end
+        refresh()
+        return true
     end
 
     function self:scroll(x, y, dir)

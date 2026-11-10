@@ -97,8 +97,8 @@ launching it from a subdirectory still works.
   `.lnk`, so it survives a reboot
 - **Right-click context menus** everywhere: on the desktop (View / Sort by /
   Refresh / New ▸ Shortcut / Personalize), on an icon (Open / Rename / Delete /
-  Properties) and on a window title bar or taskbar button (Minimise / Maximize /
-  Close)
+  Properties), inside Files (Open / Create link / Delete) and on a window title
+  bar or taskbar button (Minimise / Maximize / Close)
 - Icon views: Large / Medium / Small icons (View menu), plus Sort by Name
 - Taskbar with Start menu, running-window buttons and a live clock
   (12/24-hour, optional seconds)
@@ -116,7 +116,7 @@ launching it from a subdirectory still works.
 
 | App | Notes |
 | --- | --- |
-| **Files** | Browse the filesystem, open folders, navigate with Backspace, F5 refresh, Delete removes, Enter opens |
+| **Files** | Browse the filesystem, open folders, navigate with Backspace, F5 refresh, Delete removes, Enter opens; right-click a row for Open / Create link / Delete, and drag a file or folder onto a folder to move it there |
 | **Console** | A real CraftOS shell in a window. The shell runs in its own coroutine against a custom terminal object; only the focused console receives events, and the global `term` redirect follows focus |
 | **Notepad** | Text editor with cursor movement, Home/End, Tab, Ctrl shortcuts, save dialogs |
 | **Paint** | Pencil, Line, Box, Fill, Erase, Pick (P/L/B/F/E/I); 48-colour palette; single-level undo; load/save images |
@@ -147,6 +147,9 @@ list.
   one link per installed program, laid out column-major from the top-left.
 - **New ▸ Shortcut.** Right-click the desktop → New ▸ Shortcut opens a file
   picker; choosing a file drops a link on the next free grid cell.
+- **Create link from Files.** Right-click any file or folder in Files →
+  Create link drops the same `.lnk` on the desktop (label and icon are worked
+  out from the target), so links do not have to be made from the desktop.
 - **Open.** Double-clicking a link opens its target: folders go to Files, `.lua`
   files run in a Console (that window runs the program first, then drops to a
   shell), `.nfp`/`.png` go to Paint, everything else to Notepad. A link whose
@@ -211,9 +214,12 @@ cleanly — then reboots into the saved settings and checks they were read back.
 
 `run5` covers the desktop shell itself: the seeded `/desktop/*.lnk` files and
 their positions, the three context menus and their submenus, Escape dismissal,
-delete-with-confirmation, New ▸ Shortcut end to end (including double-clicking
+delete-with-confirmation (including the labels the confirm buttons actually
+render), New ▸ Shortcut end to end (including double-clicking
 the new link and watching its program run), dragging an icon and finding the new
-position persisted on disk, and switching icon views.
+position persisted on disk, switching icon views, and inside Files: right-click
+▸ Create link producing a seventh `.lnk`, then dragging a file onto a folder and
+finding it really moved on disk.
 
 ## Licence
 
