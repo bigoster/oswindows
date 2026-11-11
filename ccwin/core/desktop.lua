@@ -8,7 +8,7 @@
 local desktop = {}
 
 local gfx, theme, widgets, icons, wm, backdrop, dialogs, menu, C
-local state, settings
+local state, settings, programs
 
 local wallpaper = {}
 local iconGrid = {}
@@ -37,6 +37,10 @@ local SIZES = {
 }
 
 local SHORTCUT_DIR = "/desktop"
+-- Programs dropped here get a desktop link of their own (see
+-- linkPrograms), which is what makes "copy a program in, reboot, there it
+-- is" work without an installer.
+local PROGRAMS_DIR = "/programs"
 local BASE = (rawget(_G, "CCWIN_DIR") ~= nil and rawget(_G, "CCWIN_DIR") ~= "")
     and rawget(_G, "CCWIN_DIR") or "/ccwin"
 local SEED_FLAG = fs.combine(BASE, "desktop.seeded")
@@ -47,6 +51,7 @@ function desktop.attach(d)
     dialogs, menu = d.dialogs, d.menu
     C = theme.C
     state, settings = d.state, d.settings
+    programs = d.programs
     seedAndLoad()
 end
 
@@ -280,8 +285,51 @@ local function entryByFile(file)
     return nil
 end
 
+--- Give every CC-Windows program a desktop link of its own.
+-- Two folders are scanned: /programs, and any loose .lua dropped straight
+-- onto the desktop (the desktop only lists .lnk files, so without this
+-- such a program would be invisible). Only a file whose first line says
+-- `--- CC-Windows - ...` qualifies - looking at a file never runs it -
+-- and a program that already has a link is skipped, so this is cheap
+-- enough to run on every rebuild.
+local function linkPrograms()
+    if not programs then return end
+    -- The programs folder belongs to the OS: keep it present so "copy a
+    -- program into /programs" always has somewhere to land.
+    if not fs.exists(PROGRAMS_DIR) then pcall(fs.makeDir, PROGRAMS_DIR) end
+    local made = false
+    local function scan(dir)
+        for _, target in ipairs(programs.scan(dir)) do
+            local known = false
+            for _, e in ipairs(entries) do
+                if e.target == target then
+                    known = true
+                    break
+                end
+            end
+            if not known then
+                createShortcut {
+                    kind = "file",
+                    target = target,
+                    label = fs.getName(target):gsub("%.[%w]+$", ""),
+                    icon = iconFor(target),
+                }
+                made = true
+            end
+        end
+    end
+    scan(PROGRAMS_DIR)
+    scan(SHORTCUT_DIR)
+    if made then
+        loadEntries()
+        layoutIcons()
+        mark()
+    end
+end
+
 --- Regenerate the wallpaper and icon grid (after boot, resize or settings change).
 function desktop.rebuild()
+    linkPrograms()
     local W, H = gfx.size()
     wallpaper = backdrop.build(W, H, settings)
     layoutIcons()
@@ -297,7 +345,13 @@ local function openFile(path)
     if fs.isDir(path) then
         wm.create("explorer", { path = path })
     elseif ext == "lua" then
-        wm.create("console", { program = path })
+        -- a program: ours opens as a real window, anything else runs in
+        -- the CraftOS console (both decided by core/programs.lua)
+        if programs then
+            programs.open(path)
+        else
+            wm.create("console", { program = path })
+        end
     elseif ext == "nfp" or ext == "png" then
         wm.create("paint", { path = path })
     else
@@ -356,6 +410,7 @@ end
 ---------------------------------------------------------------------------
 
 local function refresh()
+    linkPrograms()
     loadEntries()
     layoutIcons()
     if selectedFile and not selectedEntry() then selectedFile = nil end

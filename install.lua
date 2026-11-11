@@ -40,10 +40,12 @@ local FILES = {
     { "ccwin/core/backdrop.lua", "/ccwin/core/backdrop.lua" },
     { "ccwin/core/dialogs.lua",  "/ccwin/core/dialogs.lua" },
     { "ccwin/core/desktop.lua",  "/ccwin/core/desktop.lua" },
+    { "ccwin/core/fabric.lua",   "/ccwin/core/fabric.lua" },
     { "ccwin/core/font.lua",     "/ccwin/core/font.lua" },
     { "ccwin/core/gfx.lua",      "/ccwin/core/gfx.lua" },
     { "ccwin/core/icons.lua",    "/ccwin/core/icons.lua" },
     { "ccwin/core/menu.lua",     "/ccwin/core/menu.lua" },
+    { "ccwin/core/programs.lua", "/ccwin/core/programs.lua" },
     { "ccwin/core/theme.lua",    "/ccwin/core/theme.lua" },
     { "ccwin/core/widgets.lua",  "/ccwin/core/widgets.lua" },
     { "ccwin/core/wm.lua",       "/ccwin/core/wm.lua" },
@@ -54,6 +56,8 @@ local FILES = {
     { "ccwin/apps/paint.lua",    "/ccwin/apps/paint.lua" },
     { "ccwin/apps/settings.lua", "/ccwin/apps/settings.lua" },
     { "ccwin/apps/system.lua",   "/ccwin/apps/system.lua" },
+
+    { "ccwin/programs/fabric_agent.lua", "/ccwin/programs/fabric_agent.lua" },
 }
 
 local function die(msg)

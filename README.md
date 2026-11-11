@@ -71,14 +71,18 @@ the exit status.
     │   ├── menu.lua      (right-click context menus and submenus)
     │   ├── wm.lua        (window list, z-order, focus, drag/resize)
     │   ├── desktop.lua   (shortcuts, wallpaper, taskbar, start menu, clock)
-    │   └── backdrop.lua  (wallpaper renderers)
-    └── apps/
-        ├── explorer.lua  (Files)
-        ├── console.lua   (Console — hosts a real CraftOS shell)
-        ├── editor.lua    (Notepad)
-        ├── paint.lua     (Paint)
-        ├── settings.lua  (Settings)
-        └── system.lua    (System monitor)
+    │   ├── backdrop.lua  (wallpaper renderers)
+    │   ├── fabric.lua    (CC:CE fabric link — "Run on", incoming programs)
+    │   └── programs.lua  (recognising and opening CC-Windows programs)
+    ├── apps/
+    │   ├── explorer.lua  (Files)
+    │   ├── console.lua   (Console — hosts a real CraftOS shell)
+    │   ├── editor.lua    (Notepad)
+    │   ├── paint.lua     (Paint)
+    │   ├── settings.lua  (Settings)
+    │   └── system.lua    (System monitor)
+    └── programs/
+        └── fabric_agent.lua  (standalone fabric peer for other computers)
 ```
 
 `startup.lua` finds `ccwin/` relative to wherever it was started from, so
@@ -97,7 +101,8 @@ launching it from a subdirectory still works.
   `.lnk`, so it survives a reboot
 - **Right-click context menus** everywhere: on the desktop (View / Sort by /
   Refresh / New ▸ Shortcut / Personalize), on an icon (Open / Rename / Delete /
-  Properties), inside Files (Open / Create link / Delete) and on a window title
+  Properties), inside Files (Open / Open in Notepad / Create link / Run on ▸
+  peer / Delete) and on a window title
   bar or taskbar button (Minimise / Maximize / Close)
 - Icon views: Large / Medium / Small icons (View menu), plus Sort by Name
 - Taskbar with Start menu, running-window buttons and a live clock
@@ -116,7 +121,7 @@ launching it from a subdirectory still works.
 
 | App | Notes |
 | --- | --- |
-| **Files** | Browse the filesystem, open folders, navigate with Backspace, F5 refresh, Delete removes, Enter opens; right-click a row for Open / Create link / Delete, and drag a file or folder onto a folder to move it there |
+| **Files** | Browse the filesystem, open folders, navigate with Backspace, F5 refresh, Delete removes, Enter opens; double-click a `.lua` runs it (a CC-Windows program gets its own window, anything else runs in the Console); right-click a row for Open / Open in Notepad / Create link / Run on ▸ peer / Delete, and drag a file or folder onto a folder to move it there |
 | **Console** | A real CraftOS shell in a window. The shell runs in its own coroutine against a custom terminal object; only the focused console receives events, and the global `term` redirect follows focus |
 | **Notepad** | Text editor with cursor movement, Home/End, Tab, Ctrl shortcuts, save dialogs |
 | **Paint** | Pencil, Line, Box, Fill, Erase, Pick (P/L/B/F/E/I); 48-colour palette; single-level undo; load/save images |
@@ -150,14 +155,88 @@ list.
 - **Create link from Files.** Right-click any file or folder in Files →
   Create link drops the same `.lnk` on the desktop (label and icon are worked
   out from the target), so links do not have to be made from the desktop.
-- **Open.** Double-clicking a link opens its target: folders go to Files, `.lua`
-  files run in a Console (that window runs the program first, then drops to a
-  shell), `.nfp`/`.png` go to Paint, everything else to Notepad. A link whose
+- **Open.** Double-clicking a link opens its target: folders go to Files,
+  `.lua` files are opened the OS way — a program written for CC-Windows gets
+  its own window, anything else runs in a Console (that window runs the
+  program first, then drops to a shell), `.nfp`/`.png` go to Paint,
+  everything else to Notepad. A link whose
   program no longer exists is deleted when you open it.
 - **Arrange / remove.** Drag an icon to move it; right-click → Rename / Delete
   (with a confirmation) / Properties, or select and press `F2` / `Delete`.
 - **Views.** View ▸ Large / Medium / Small icons changes the grid cell size;
   Sort by ▸ Name re-flows the icons into column order.
+
+## Installing programs
+
+Copying a program in *is* the install — no lists to edit, no installer to
+run:
+
+1. Put the file in **`/programs`** (the OS keeps this folder present), or
+   drop it straight onto the desktop.
+2. If its first line says so (see below), the OS links it on the desktop
+   automatically — on the next Refresh or reboot as well.
+3. Double-click the link, or open it from Files, and it runs.
+
+**The header.** A program is "written for CC-Windows" when its **first
+line** says so:
+
+```lua
+--- CC-Windows - Solitaire
+```
+
+Detection only ever *reads* that line: looking at a file never runs it, so
+dropping scripts into `/programs` cannot fire off code just by being
+scanned.
+
+**Opening one.** With the header, the OS loads the file in a sandbox first
+(no fs writes, no timers, `print` is a no-op) purely to see whether it
+returns an app table — `id`, `name`, `create`: the same contract
+`ccwin/apps/*.lua` follows, covered in
+[Writing programs for CC-Windows](docs/writing-apps.md):
+
+* **It returns an app** → the file is loaded again, for real this time,
+  and opened as a window with a title bar and a taskbar button. The app
+  gets `opts.path` (its own path) and the full shared `ctx`.
+* **No header, or no app table** → it runs in the CraftOS console exactly
+  like `run <path>`, so ordinary scripts keep working untouched.
+
+In Files, double-clicking a `.lua` runs it this way; the right-click menu
+still offers **Open in Notepad** when you want to edit it instead.
+
+**Anywhere on the filesystem.** The OS installs a `ccwin` global at boot,
+so a program on a disc reaches the core apps and libraries from wherever
+it lives — a copy on a drive is exactly as powerful as one in `/programs`:
+
+```lua
+ccwin.dir                        -- "/ccwin"
+ccwin.path("core/widgets.lua")   -- "/ccwin/core/widgets.lua"
+ccwin.launch("editor", { path = ... })   -- open a core app
+ccwin.open("/programs/game.lua")         -- open any program the OS way
+```
+
+Console-run programs also get `arg = { [0] = path }`, and both kinds get
+`shell.setRunningProgram(path)`, so `shell`-relative APIs know where the
+program lives.
+
+## Running a program on another computer (the fabric link)
+
+On **CC:CE** with a fabric link (gold pins), CC-Windows can hand a program
+to another computer and watch it run there:
+
+* Right-click a `.lua` in Files → **Run on ▸ Computer 7**. The whole file
+  travels with the message, and the status bar reports
+  `Sending hello.lua to Computer 7...` and then the peer's answer,
+  `Computer 7: running hello.lua`.
+* The other side does not need CC-Windows: a plain CraftOS computer runs
+  `/ccwin/programs/fabric_agent.lua`, which answers `hello`s, runs what it
+  is sent and can push a program back the other way
+  (`fabric> run 7 /programs/hello.lua`; also `peers`, `hello`, `help`,
+  `exit`). A machine that *does* run CC-Windows opens the received program
+  in a console window of its own.
+* The **System** app gains a *Fabric* section (link state and peer names)
+  while the link is up.
+* Without CC:CE — no `cee` API — every one of these quietly disappears:
+  no menu entries, no System section, no errors.
 
 ## Console specifics
 
@@ -219,7 +298,14 @@ render), New ▸ Shortcut end to end (including double-clicking
 the new link and watching its program run), dragging an icon and finding the new
 position persisted on disk, switching icon views, and inside Files: right-click
 ▸ Create link producing a seventh `.lnk`, then dragging a file onto a folder and
-finding it really moved on disk.
+finding it really moved on disk. It then exercises the two new halves: the
+fabric link (Run on → the exact message that went over the wire → the peer's
+answer in the status bar, plus incoming runs including a source-only drop into
+`/received`), and installing/running programs (auto-linking from `/programs`
+and loose desktop `.lua`, header detection that never executes anything,
+windowed app opens, console fallback for header'd non-apps, Explorer
+double-click vs Open in Notepad, a disc program reaching the core apps through
+`ctx`, and the `ccwin` global).
 
 ## Licence
 

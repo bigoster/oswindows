@@ -65,6 +65,7 @@ end
 
 function app.create(win, opts, ctx)
     theme, widgets, C = ctx.theme, ctx.widgets, ctx.theme.C
+    local fabric = ctx.fabric
 
     local self = {
         sections = {},
@@ -154,6 +155,30 @@ function app.create(win, opts, ctx)
                 end
             end
             addSection(list, "Power", rows)
+        end
+
+        -----------------------------------------------------------------
+        -- The CC:CE fabric link. Only shown where there is one: on a
+        -- computer without CC:CE this section must not appear at all.
+        if fabric and fabric.present() then
+            rows = {}
+            rows[#rows + 1] = { "Link", "Up (CC:CE fabric)" }
+            local peers = fabric.peers()
+            rows[#rows + 1] = {
+                "Peers",
+                #peers > 0 and tostring(#peers) or "(none connected)",
+            }
+            for i = 1, math.min(4, #peers) do
+                rows[#rows + 1] = {
+                    nil,
+                    fabric.peerName(peers[i].id)
+                        .. "  -  id " .. tostring(peers[i].id),
+                }
+            end
+            if #peers > 4 then
+                rows[#rows + 1] = { nil, "and " .. (#peers - 4) .. " more" }
+            end
+            addSection(list, "Fabric", rows)
         end
 
         -----------------------------------------------------------------

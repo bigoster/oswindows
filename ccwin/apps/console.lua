@@ -400,10 +400,21 @@ function app.create(win, opts, ctx)
 
     startShell = function()
         local path = "/rom/programs/shell.lua"
+        local isProgram = false
         if startupProgram then
             path = startupProgram
             startupProgram = nil
             ranProgram = true
+            isProgram = true
+        end
+        if isProgram then
+            -- Behave the way the shell does for `run <path>`: the program
+            -- can ask where it lives, so a copy on a disc still finds its
+            -- own libraries next to itself, and it gets an `arg` table.
+            if type(shell) == "table" and shell.setRunningProgram then
+                pcall(shell.setRunningProgram, path)
+            end
+            arg = { [0] = path }
         end
         local f = fs.open(path, "r")
         if not f then

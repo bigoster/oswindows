@@ -1,6 +1,6 @@
 # Writing programs for CC-Windows
 
-This guide covers the two ways to write software for CC-Windows:
+This guide covers the three ways to write software for CC-Windows:
 
 1. **Console programs** — ordinary CraftOS Lua programs (`print`, `read`,
    `os.pullEvent`) that run inside a Console window. Everything in the
@@ -8,6 +8,10 @@ This guide covers the two ways to write software for CC-Windows:
 2. **GUI applications** — windowed programs with a title bar, buttons, mouse
    input and pixel drawing. These are Lua modules that CC-Windows loads at
    boot.
+3. **Drop-in programs** — the same kind of GUI app (or a plain script),
+   installed by copying it into `/programs` or onto the desktop. A
+   `--- CC-Windows` first line is all it takes for the OS to link it and
+   open it the right way — no registration (section 19).
 
 If you have never written a CraftOS program before, read section 1 first. If
 you want a window with buttons in it, jump to [section 2](#2-your-first-gui-app).
@@ -34,6 +38,7 @@ you want a window with buttons in it, jump to [section 2](#2-your-first-gui-app)
 16. [A complete example app](#16-a-complete-example-app)
 17. [Checklist](#17-checklist)
 18. [Gotchas](#18-gotchas)
+19. [Drop-in programs](#19-drop-in-programs)
 
 ---
 
@@ -142,8 +147,14 @@ return app
 correct version in [section 16](#16-a-complete-example-app) uses the same
 imports and is covered by an automated test.
 
+Note the first line, `--- CC-Windows - Hello World sample app.`: it is a
+plain comment to the OS's own boot loading, but it is also the marker that
+makes the file recognisable as a CC-Windows program when it is copied
+into `/programs` — see [section 19](#19-drop-in-programs).
+
 To make it appear you also have to register it — that is
-[section 3](#3-registering-an-app).
+[section 3](#3-registering-an-app) — or skip registration entirely and
+drop it in: [section 19](#19-drop-in-programs).
 
 ---
 
@@ -1004,6 +1015,10 @@ ctx.launch("hello", { count = 5 })
 - [ ] added to `APP_LIST` in `ccwin/main.lua`
 - [ ] added to `DESKTOP_APPS` in `ccwin/core/desktop.lua`
 - [ ] added to the manifest in `install.lua`
+- [ ] or, for a drop-in install: first line is `--- CC-Windows - ...` (omit
+      it on purpose to stay a console program) and the top level only
+      defines and returns the app — no `sleep`, `peripheral` or fs writes
+      there (they run in the sandbox during detection)
 - [ ] colours come from `ctx.theme.C`, never `colors.*`
 - [ ] every state change sets `win.dirty = true`
 - [ ] timers are matched by id and cancelled in `close()`
@@ -1057,6 +1072,102 @@ missing from `DESKTOP_APPS` runs but has no icon or start-menu entry; missing
 from `install.lua` it never reaches players.
 
 **Lua 5.2.** `//` is a syntax error. Use `math.floor(a / b)`.
+
+---
+
+## 19. Drop-in programs
+
+Registering an app (section 3) is how software ships *with* the OS. To
+**install** something, you do not register anything: copy the file into
+**`/programs`** (the OS keeps that folder present), or drop it straight
+onto the desktop, and the OS takes it from there.
+
+### The one-line contract
+
+A program is "written for CC-Windows" when its **first line** says so:
+
+```lua
+--- CC-Windows - Solitaire
+local app = {}
+app.id = "solitaire"
+app.name = "Solitaire"
+-- ...
+return app
+```
+
+Finding that out reads exactly one line of text — a file is never
+executed just by being scanned, so scripts lying in `/programs` cannot
+fire off code until somebody actually opens them.
+
+### What the OS does with it
+
+* **Auto desktop link.** On boot and on every Refresh, `/programs` and
+  any loose `.lua` sitting on the desktop are scanned; each header'd file
+  gets a `kind = "file"` shortcut (icon `terminal`, label = file name
+  minus `.lua`). A program that already has a link is skipped, so the scan
+  is cheap enough to run every time.
+* **Opening it the right way.** A desktop link, a double-click in Files
+  and `ccwin.open(path)` all make the same decision:
+  1. The header is there, so the file is loaded in a **sandbox** — no fs
+     writes, no timers, `print`/`write` are no-ops, no `load`, `dofile`,
+     `shell`, `term` or `peripheral`, and `ccwin` exposes only `dir` and
+     `path` — purely to see whether it **returns an app table** (`id`,
+     `name`, `create`; sections 4 and 5).
+  2. **It does** → the file is loaded a second time, for real, with the
+     full environment the OS's own programs get, and that app opens as a
+     window. `opts.path` is the program's path, and `ctx` arrives as
+     usual in `create`.
+  3. **It does not** (no header, or the top level returns nothing) → it
+     runs in a CraftOS console like `run <path>` — ordinary scripts keep
+     working untouched.
+
+  The sandboxed probe means the *decision* never causes side effects, and
+  the real run happens exactly once either way.
+
+### Rules for the top level
+
+* **Keep the top level pure enough to `return app`.** During the probe it
+  runs in the sandbox: calling `sleep`, `peripheral.*` or `fs.write` there
+  raises an error, the file is treated as an ordinary program, and it gets
+  a console window instead of its own. Real work belongs in `create` and
+  the callbacks.
+* **No header means console.** If you *want* a console program, simply
+  leave the first line off — nothing changes for plain scripts.
+* Detection matches `^%-%-+%s*CC%-Windows`, so `--- CC-Windows - Name`,
+  `----CC-Windows` and `-- CC-Windows` all count.
+
+### Opening it yourself
+
+```lua
+ccwin.open("/programs/solitaire.lua")     -- the OS way (window or console)
+ccwin.open("/disk/games/solitaire.lua")   -- same decision, any drive
+ccwin.launch("editor", { path = ... })    -- a registered core app by id
+```
+
+Explorer's right-click menu for a `.lua` reads
+**Open / Open in Notepad / Create link / Run on ▸ peer / Delete** —
+double-click runs it, the second entry opens the editor.
+
+### From a disc, in a window, with everything
+
+Nothing about `/programs` is special except that it is scanned for links.
+A header'd app opened from `/disk/...` gets the real environment and the
+shared context, so it reaches the core apps and libraries exactly like one
+installed on the main drive:
+
+```lua
+-- top level (real environment: full fs, dofile, ccwin, ...)
+local widgets = dofile(ccwin.path("core/widgets.lua"))
+
+function app.create(win, opts, ctx)
+    -- opts.path == "/disk/games/solitaire.lua" (where I live)
+    ctx.launch("editor", { path = opts.path })  -- open a core app
+end
+```
+
+Console-run programs get `arg = { [0] = path }` on top of that, and both
+kinds get `shell.setRunningProgram(path)` so shell-relative APIs know
+where the program lives.
 
 ---
 

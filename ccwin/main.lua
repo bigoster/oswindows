@@ -76,6 +76,8 @@ local backdrop = dofile(path("core/backdrop.lua"))
 local menu = dofile(path("core/menu.lua"))
 local wm = dofile(path("core/wm.lua"))
 local desktop = dofile(path("core/desktop.lua"))
+local fabric = dofile(path("core/fabric.lua"))
+local programs = dofile(path("core/programs.lua"))
 
 local APP_LIST = { "console", "explorer", "editor", "paint", "settings", "system" }
 local apps = {}
@@ -162,6 +164,12 @@ local function boot()
         wm = wm,
     }
 
+    -- The fabric link needs the window manager to open a console for an
+    -- incoming program, and the window manager needs it to route
+    -- cee_fabric_message: attach it first, hand it over inside wm.attach.
+    fabric.attach { wm = wm }
+    programs.attach { wm = wm }
+
     wm.attach {
         gfx = gfx,
         theme = theme,
@@ -171,6 +179,8 @@ local function boot()
         menu = menu,
         apps = apps,
         state = state,
+        fabric = fabric,
+        programs = programs,
     }
 
     desktop.attach {
@@ -184,10 +194,22 @@ local function boot()
         menu = menu,
         state = state,
         settings = settings,
+        programs = programs,
     }
 
     wm.setDesktop(desktop)
     desktop.rebuild()
+
+    -- The OS API for programs running outside a window: a program on a
+    -- disc can reach the core apps and modules through this wherever it
+    -- lives (ccwin.launch("editor", {path = ...}), dofile(ccwin.path(
+    -- "core/widgets.lua")) and so on).
+    _G.ccwin = {
+        dir = BASE,
+        path = path,
+        launch = function(appId, opts) return wm.create(appId, opts) end,
+        open = function(p, opts) return programs.open(p, opts) end,
+    }
 
     -- The global term redirect follows the focused window: consoles own
     -- it while focused, everything else draws through the native term.
@@ -210,6 +232,7 @@ local function boot()
         _G.CCWIN_DEBUG_STATE = {
             wm = wm, desktop = desktop, apps = apps, menu = menu,
             state = state, gfx = gfx, theme = theme, native = native,
+            fabric = fabric, programs = programs,
         }
     end
 
@@ -238,6 +261,9 @@ local function boot()
             elseif ev[2] == clockTimer then
                 clockTimer = os.startTimer(1)
                 desktop.updateClock()
+                -- greet fabric peers we have not met yet; a failure here
+                -- must never take the desktop down with it
+                pcall(fabric.poll)
             end
         end
 

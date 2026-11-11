@@ -103,6 +103,15 @@ function app.create(win, opts, ctx)
     local function openItem(item)
         if item.isDir then
             navigate(item.path)
+        elseif item.name:match("%.lua$") then
+            -- A program: ours opens as a real window, anything else runs
+            -- in the CraftOS console. Notepad stays one right-click away
+            -- through "Open in Notepad".
+            if ctx.programs and ctx.programs.open then
+                ctx.programs.open(item.path)
+            else
+                ctx.launch("console", { program = item.path })
+            end
         else
             -- hand text files to the editor, everything else says hello
             local editor = ctx.wm and ctx.wm.context().apps and ctx.wm.context().apps.editor
@@ -376,21 +385,71 @@ function app.create(win, opts, ctx)
         win.dirty = true
     end
 
+    --- Hand this program to another computer and let it run there.
+    local function runOn(item, id)
+        if not ctx.fabric then
+            self.status = "The fabric link is not available"
+            win.dirty = true
+            return
+        end
+        local name = ctx.fabric.peerName(id)
+        self.status = "Sending " .. item.name .. " to " .. name .. "..."
+        win.dirty = true
+        ctx.fabric.runOn(id, item.path, function(ok, msg)
+            self.status = ok and (name .. ": " .. (msg or "started"))
+                or ("Error: " .. (msg or "could not run it there"))
+            win.dirty = true
+        end)
+    end
+
+    --- The "Run on" submenu: only for programs, and only when there is
+    -- someone on the other end of the fabric link to run them.
+    local function runOnItems(item)
+        local fab = ctx.fabric
+        if not fab or not fab.present() then return nil end
+        if item.isDir or not item.name:match("%.lua$") then return nil end
+        local peers = fab.peers()
+        if #peers == 0 then return nil end
+        local items = {}
+        for _, p in ipairs(peers) do
+            local id = p.id
+            items[#items + 1] = {
+                label = fab.peerName(id),
+                icon = "computer",
+                onPick = function() runOn(item, id) end,
+            }
+        end
+        return items
+    end
+
     --- Right-click menu for a row (screen coordinates).
     local function openItemMenu(item, sx, sy)
         if not ctx.menu then return end
-        ctx.menu.open {
-            x = sx, y = sy,
-            items = {
-                { label = "Open", icon = item.isDir and "folder" or "file",
-                  onPick = function() openItem(item) end },
-                { label = "Create link", icon = "file",
-                  onPick = function() createLink(item) end },
-                { sep = true },
-                { label = "Delete",
-                  onPick = function() askDelete(item) end },
-            },
+        local items = {
+            { label = "Open", icon = item.isDir and "folder" or "file",
+              onPick = function() openItem(item) end },
         }
+        -- Open runs a .lua program now, so the editor needs its own way in.
+        if not item.isDir and item.name:match("%.lua$") then
+            items[#items + 1] = {
+                label = "Open in Notepad", icon = "editor",
+                onPick = function()
+                    ctx.launch("editor", { path = item.path })
+                end,
+            }
+        end
+        items[#items + 1] = { label = "Create link", icon = "file",
+                              onPick = function() createLink(item) end }
+        local runItems = runOnItems(item)
+        if runItems then
+            items[#items + 1] = {
+                label = "Run on", icon = "computer", submenu = runItems,
+            }
+        end
+        items[#items + 1] = { sep = true }
+        items[#items + 1] = { label = "Delete",
+                              onPick = function() askDelete(item) end }
+        ctx.menu.open { x = sx, y = sy, items = items }
     end
 
     function self:click(x, y, button, double)

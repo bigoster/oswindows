@@ -5,7 +5,7 @@
 local wm = {}
 
 local gfx, theme, widgets, dialogs, icons, menu, C
-local apps, state, desktop
+local apps, state, desktop, fabric, programs
 local rootDC
 
 local windows = {}
@@ -31,6 +31,8 @@ function wm.attach(d)
     menu = d.menu
     C = theme.C
     apps, state = d.apps, d.state
+    fabric = d.fabric
+    programs = d.programs
     rootDC = gfx.newDC(0, 0, gfx.size())
 end
 
@@ -134,9 +136,17 @@ local function refocusTop()
     if wm.onFocus then wm.onFocus(focused) end
 end
 
+--- Create a window for `appId` (a name in the app registry) or for an
+-- app table loaded straight from a program file (see core/programs.lua).
 function wm.create(appId, opts)
-    local app = apps[appId]
-    if not app then error("unknown app: " .. tostring(appId), 2) end
+    local app
+    if type(appId) == "table" then
+        app = appId
+        appId = app.id or "program"
+    else
+        app = apps[appId]
+        if not app then error("unknown app: " .. tostring(appId), 2) end
+    end
 
     local _, _, aw, ah = wm.desktopArea()
     local size = app.defaultSize or { math.floor(aw * 0.6), math.floor(ah * 0.6) }
@@ -268,6 +278,10 @@ function wm.context()
             icons = icons,
             menu = menu,
             apps = apps,
+            -- The CC:CE fabric link and the program loader: Explorer's
+            -- "Run on" and "Open", and the System app's Fabric section.
+            fabric = fabric,
+            programs = programs,
             launch = function(appId, opts) return wm.create(appId, opts) end,
             -- The context is built before setDesktop runs, so this closure
             -- reads the upvalue lazily. Explorer uses it for "Create link".
@@ -673,6 +687,12 @@ function wm.handle(ev)
             layout(win)
         end
         if desktop then desktop.rebuild() end
+        wm.dirty = true
+    elseif name == "cee_fabric_message" then
+        -- A peer on the CC:CE fabric: a greeting, a program for us to run,
+        -- or the answer to a run we asked for. Programs inside consoles see
+        -- the same event (wm.broadcast already forwarded it).
+        if fabric and fabric.receive then fabric.receive(ev[2], ev[3]) end
         wm.dirty = true
     elseif name == "timer" then
         for _, win in ipairs(windows) do
