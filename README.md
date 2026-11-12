@@ -80,7 +80,8 @@ the exit status.
     │   ├── editor.lua    (Notepad)
     │   ├── paint.lua     (Paint)
     │   ├── settings.lua  (Settings)
-    │   └── system.lua    (System monitor)
+    │   ├── system.lua    (System monitor)
+    │   └── browser.lua   (Browser)
     └── programs/
         └── fabric_agent.lua  (standalone fabric peer for other computers)
 ```
@@ -127,6 +128,7 @@ launching it from a subdirectory still works.
 | **Paint** | Pencil, Line, Box, Fill, Erase, Pick (P/L/B/F/E/I); 48-colour palette; single-level undo; load/save images |
 | **Settings** | Theme, wallpaper, clock format; persisted to `/ccwin/settings.cfg` |
 | **System** | Computer ID, label, OS version, free/total disk space, peripheral list |
+| **Browser** | Small HTML browser: `http.request` fetches (the answer arrives via `feed`), headings, lists, tables, quotes, code and buttons lay out like a real page, only the visible lines are drawn, back/forward history, and `file://` opens folders and text files |
 
 **Dialogs** — message boxes, confirmation prompts and file open/save pickers are
 implemented centrally in `core/dialogs.lua`; right-click context menus live in

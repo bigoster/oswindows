@@ -56,6 +56,7 @@ local FILES = {
     { "ccwin/apps/paint.lua",    "/ccwin/apps/paint.lua" },
     { "ccwin/apps/settings.lua", "/ccwin/apps/settings.lua" },
     { "ccwin/apps/system.lua",   "/ccwin/apps/system.lua" },
+    { "ccwin/apps/browser.lua",  "/ccwin/apps/browser.lua" },
 
     { "ccwin/programs/fabric_agent.lua", "/ccwin/programs/fabric_agent.lua" },
 }

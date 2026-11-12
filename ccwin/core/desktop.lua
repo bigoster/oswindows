@@ -25,7 +25,7 @@ local ICON_PAD = 6
 local TASK_START_W = 50
 local ROW_H = 15
 
-local DESKTOP_APPS = { "explorer", "console", "editor", "paint", "settings", "system" }
+local DESKTOP_APPS = { "explorer", "console", "editor", "paint", "settings", "system", "browser" }
 
 -- Icon views, the desktop equivalent of Windows' Large/Medium/Small icons.
 -- `medium` is the default and must keep the original 62x54 grid: the shell's

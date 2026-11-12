@@ -79,7 +79,7 @@ local desktop = dofile(path("core/desktop.lua"))
 local fabric = dofile(path("core/fabric.lua"))
 local programs = dofile(path("core/programs.lua"))
 
-local APP_LIST = { "console", "explorer", "editor", "paint", "settings", "system" }
+local APP_LIST = { "console", "explorer", "editor", "paint", "settings", "system", "browser" }
 local apps = {}
 for _, id in ipairs(APP_LIST) do
     local app = dofile(path("apps/" .. id .. ".lua"))

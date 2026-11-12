@@ -164,8 +164,8 @@ Three lists control an app's life. All three must be edited.
 
 | List | File | What it does |
 | --- | --- | --- |
-| `APP_LIST` | `ccwin/main.lua` (line 78) | loads the file at boot: `dofile(path("apps/" .. id .. ".lua"))` |
-| `DESKTOP_APPS` | `ccwin/core/desktop.lua` (line 19) | puts an icon on the desktop and an entry in the start menu |
+| `APP_LIST` | `ccwin/main.lua` | loads the file at boot: `dofile(path("apps/" .. id .. ".lua"))` |
+| `DESKTOP_APPS` | `ccwin/core/desktop.lua` | puts an icon on the desktop and an entry in the start menu |
 | installer manifest | `install.lua` | ships the file to players over `wget` |
 
 ```lua
@@ -189,6 +189,10 @@ confusion.
 Both desktop icons and the start menu iterate `DESKTOP_APPS` and silently
 skip ids that have no loaded app, so a typo means "no icon, no menu entry,
 no error".
+
+`ccwin/apps` also holds *drop-in* programs (section 19) — copying a file in
+there does **not** register it: only `APP_LIST` loads a module at boot. A
+drop-in is linked on the desktop and opened by path, never launched by id.
 
 ---
 
@@ -488,6 +492,15 @@ def("hello", { ["1"] = 75, ["2"] = 69 }, {
 Each row is 8 characters. `.` is transparent; every other character is a key
 into that icon's colour map, whose values are palette indices (75 = yellow,
 69 = blue here). Then set `app.icon = "hello"`.
+
+### Pictures instead of glyphs
+
+`app.icon` names a glyph for a *registered* app's desktop icon. A drop-in
+program (section 19) has no glyph to name: its desktop link shows a
+**picture** the program ships — beside it (`solitaire.nfp`) or inside it as
+an `--- icon:` comment block — drawn scaled into the same icon cell. That
+format, and how it is found, is [section 19](#19-drop-in-programs); glyph
+icons remain the fallback when a program ships no picture.
 
 ---
 
@@ -829,6 +842,11 @@ On failure your window is replaced by a crash panel — *"This program has
 stopped."* plus the error text and a Close button — and **the rest of the
 desktop keeps running**. The same happens if `app.create` itself throws.
 
+Nothing runs after the failure: `wm.call` re-checks the window before it
+touches the (now dropped) instance, so the crash panel is the end of it.
+An error inside a callback can therefore never take the shell's event loop
+down with it — one bad program costs exactly one window.
+
 Practical implications:
 
 * an error is survivable, but your window is dead; the user must close it
@@ -1019,6 +1037,9 @@ ctx.launch("hello", { count = 5 })
       it on purpose to stay a console program) and the top level only
       defines and returns the app — no `sleep`, `peripheral` or fs writes
       there (they run in the sandbox during detection)
+- [ ] drop-in picture (optional): `<name>.nfp` / `<name>.cwp` beside the
+      file, or an `--- icon:` block of hex rows inside it — at most 64×64,
+      one NFP digit per pixel (section 19)
 - [ ] colours come from `ctx.theme.C`, never `colors.*`
 - [ ] every state change sets `win.dirty = true`
 - [ ] timers are matched by id and cancelled in `close()`
@@ -1080,7 +1101,8 @@ from `install.lua` it never reaches players.
 Registering an app (section 3) is how software ships *with* the OS. To
 **install** something, you do not register anything: copy the file into
 **`/ccwin/apps`** (the OS keeps that folder present), or drop it straight
-onto the desktop, and the OS takes it from there.
+onto the desktop, and the OS takes it from there — a desktop link, the
+right way to open it, and its picture if it ships one.
 
 ### The one-line contract
 
@@ -1170,6 +1192,11 @@ no picture anywhere keeps the usual glyph icon.
   the callbacks.
 * **No header means console.** If you *want* a console program, simply
   leave the first line off — nothing changes for plain scripts.
+* **A drop-in is never registered.** It does not go into `APP_LIST`, so
+  nothing can `ctx.launch("solitaire")` it — it is opened by path: the
+  desktop link, a double-click in Files, or `ccwin.open(path)`. Set
+  `app.id` anyway, because the window's `appId` (taskbar, focus lookups)
+  comes from it.
 * Detection matches `^%-%-+%s*CC%-Windows`, so `--- CC-Windows - Name`,
   `----CC-Windows` and `-- CC-Windows` all count.
 
