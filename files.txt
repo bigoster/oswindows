@@ -1,0 +1,37 @@
+# CC-Windows system file list, in repository order.
+#
+# Each line: <path in the repository> <destination on the computer>
+# The in-OS updater (System app -> Check for updates -> Install update)
+# downloads every source here and replaces the destination when the bytes
+# differ from what is installed.
+#
+# install.lua carries the same pairs in its FILES table; install_test.lua
+# checks the two stay in step in both directions. So when you add a system
+# file, add it to BOTH this file and FILES in install.lua, and bump
+# ccwin/version so computers already installed are told there is an update.
+#
+# Lines starting with # are ignored.
+
+ccwin/startup.lua /startup.lua
+ccwin/main.lua /ccwin/main.lua
+ccwin/version /ccwin/version
+ccwin/core/backdrop.lua /ccwin/core/backdrop.lua
+ccwin/core/dialogs.lua /ccwin/core/dialogs.lua
+ccwin/core/desktop.lua /ccwin/core/desktop.lua
+ccwin/core/fabric.lua /ccwin/core/fabric.lua
+ccwin/core/font.lua /ccwin/core/font.lua
+ccwin/core/gfx.lua /ccwin/core/gfx.lua
+ccwin/core/icons.lua /ccwin/core/icons.lua
+ccwin/core/menu.lua /ccwin/core/menu.lua
+ccwin/core/programs.lua /ccwin/core/programs.lua
+ccwin/core/theme.lua /ccwin/core/theme.lua
+ccwin/core/widgets.lua /ccwin/core/widgets.lua
+ccwin/core/wm.lua /ccwin/core/wm.lua
+ccwin/apps/console.lua /ccwin/apps/console.lua
+ccwin/apps/editor.lua /ccwin/apps/editor.lua
+ccwin/apps/explorer.lua /ccwin/apps/explorer.lua
+ccwin/apps/paint.lua /ccwin/apps/paint.lua
+ccwin/apps/settings.lua /ccwin/apps/settings.lua
+ccwin/apps/system.lua /ccwin/apps/system.lua
+ccwin/apps/browser.lua /ccwin/apps/browser.lua
+ccwin/programs/fabric_agent.lua /ccwin/programs/fabric_agent.lua

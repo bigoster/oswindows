@@ -39,11 +39,12 @@ Or without saving a copy of the installer:
 wget run https://raw.githubusercontent.com/bigoster/oswindows/main/install.lua
 ```
 
-`install.lua` fetches every file from the repository, checks that each one
-really is a compilable Lua chunk (so a truncated download or an HTML error
+`install.lua` fetches every file from the repository, checks that each Lua
+file really is a compilable chunk (so a truncated download or an HTML error
 page is caught rather than installed), and only then puts it in place.
-Re-running it upgrades an existing install in place and never touches
-`/ccwin/settings.cfg`.
+It also writes `/ccwin/version`, the marker the in-OS updater compares
+against GitHub (see [Updating](#updating)). Re-running it upgrades an
+existing install in place and never touches `/ccwin/settings.cfg`.
 
 It downloads to a `<file>.new` temp name first because the ROM's `wget`
 refuses to overwrite an existing file *and* reports success even when the
@@ -61,6 +62,7 @@ the exit status.
 ├── startup.lua
 └── ccwin/
     ├── main.lua
+    ├── version      (the marker the in-OS updater compares with GitHub)
     ├── core/
     │   ├── font.lua      (generated glyph atlas — do not edit by hand)
     │   ├── gfx.lua       (framebuffer, clipping, DC drawing primitives)
@@ -88,6 +90,37 @@ the exit status.
 
 `startup.lua` finds `ccwin/` relative to wherever it was started from, so
 launching it from a subdirectory still works.
+
+## Updating
+
+The **System** app has an *Updates* band at the top with one button:
+
+- **Check for updates** fetches `ccwin/version` from the repository — a
+  single small download — and compares it with `/ccwin/version` on the
+  computer. It reports either `Up to date - version 1.0 is installed.` or
+  `Update available: <local> to <remote>`.
+- **Install update** then downloads `files.txt` (the file list), fetches
+  every system file through it and replaces the ones whose bytes differ
+  from what is installed. Files that already match are left alone, and
+  every Lua file is compiled with `load()` — never run — before it is
+  allowed near the filesystem. When it finishes it records the new
+  `/ccwin/version` and asks for a `reboot`.
+
+Everything happens in the background (`http.request` plus `feed`), so the
+window stays alive while it works. If `http` is off, the repository is
+unreachable or a download comes back broken, the band says exactly what
+went wrong and **no file is touched** — the version marker is only written
+by a completed update, so a failed one simply gets offered again next time.
+
+**When you push changes to the repository:**
+
+1. Add any new system file to *both* `files.txt` and the `FILES` table in
+   `install.lua` (`install_test.lua` fails when the two lists differ).
+2. Bump the number in `ccwin/version` — that file is what every installed
+   computer compares against, so nothing is offered until it changes.
+
+Hand-edited system files are replaced the next time an update installs,
+exactly like re-running the installer.
 
 ## Features
 
@@ -127,7 +160,7 @@ launching it from a subdirectory still works.
 | **Notepad** | Text editor with cursor movement, Home/End, Tab, Ctrl shortcuts, save dialogs |
 | **Paint** | Pencil, Line, Box, Fill, Erase, Pick (P/L/B/F/E/I); 48-colour palette; single-level undo; load/save images |
 | **Settings** | Theme, wallpaper, clock format; persisted to `/ccwin/settings.cfg` |
-| **System** | Computer ID, label, OS version, free/total disk space, peripheral list |
+| **System** | Computer ID, label, OS version, free/total disk space, peripheral list, plus the **OS updater**: *Check for updates* compares `/ccwin/version` with GitHub and *Install update* replaces the system files that changed |
 | **Browser** | Small HTML browser: `http.request` fetches (the answer arrives via `feed`), headings, lists, tables, quotes, code and buttons lay out like a real page, only the visible lines are drawn, back/forward history, and `file://` opens folders and text files |
 
 **Dialogs** — message boxes, confirmation prompts and file open/save pickers are
@@ -330,6 +363,13 @@ link, header detection that never executes anything,
 windowed app opens, console fallback for header'd non-apps, Explorer
 double-click vs Open in Notepad, a disc program reaching the core apps through
 `ctx`, and the `ccwin` global).
+
+`update_test` drives the System app's OS updater on its own: check →
+`Update available` → install against the *real* `files.txt` (every
+destination verified byte-identical, nothing ever executed), plus the
+up-to-date path, http switched off, an HTTP 404, an HTML page instead of a
+version, a rejected file list, a corrupt download, the 30-second timeout
+and closing mid-update.
 
 ## Licence
 

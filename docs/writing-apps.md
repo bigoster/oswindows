@@ -160,13 +160,14 @@ drop it in: [section 19](#19-drop-in-programs).
 
 ## 3. Registering an app
 
-Three lists control an app's life. All three must be edited.
+Three lists control an app's life. All three must be edited (the last one
+in two files).
 
 | List | File | What it does |
 | --- | --- | --- |
 | `APP_LIST` | `ccwin/main.lua` | loads the file at boot: `dofile(path("apps/" .. id .. ".lua"))` |
 | `DESKTOP_APPS` | `ccwin/core/desktop.lua` | puts an icon on the desktop and an entry in the start menu |
-| installer manifest | `install.lua` | ships the file to players over `wget` |
+| installer manifest | `install.lua` **and** `files.txt` | ships the file to players over `wget`, and tells the in-OS updater about it |
 
 ```lua
 -- ccwin/main.lua
@@ -179,7 +180,14 @@ local DESKTOP_APPS = { "explorer", "console", "editor", "paint", "settings", "sy
 ```lua
 -- install.lua, inside the manifest table: { source, destination }
 { "ccwin/apps/hello.lua", "/ccwin/apps/hello.lua" },
+
+-- files.txt, the same pair, one per line
+ccwin/apps/hello.lua /ccwin/apps/hello.lua
 ```
+
+The two manifests must stay identical — `install_test.lua` fails when they
+drift apart — and a new system file means bumping `ccwin/version` so the
+System app's updater can announce it.
 
 `APP_LIST` entries are **filenames** (minus `.lua`); the module's `app.id` is
 the **key** in the apps table (`apps[app.id or id] = app`), and that is what
@@ -1032,7 +1040,8 @@ ctx.launch("hello", { count = 5 })
 - [ ] `app.create(win, opts, ctx)` **returns** the instance table
 - [ ] added to `APP_LIST` in `ccwin/main.lua`
 - [ ] added to `DESKTOP_APPS` in `ccwin/core/desktop.lua`
-- [ ] added to the manifest in `install.lua`
+- [ ] added to the manifest in `install.lua` **and** to `files.txt`, then
+      `ccwin/version` bumped (`install_test.lua` checks they agree)
 - [ ] or, for a drop-in install: first line is `--- CC-Windows - ...` (omit
       it on purpose to stay a console program) and the top level only
       defines and returns the app — no `sleep`, `peripheral` or fs writes
@@ -1090,7 +1099,8 @@ if path then loadFile(path) end
 
 **Registration is three lists, not one.** A file that is in `APP_LIST` but
 missing from `DESKTOP_APPS` runs but has no icon or start-menu entry; missing
-from `install.lua` it never reaches players.
+from `install.lua` and `files.txt` it never reaches players, and installed
+computers are never told to fetch it.
 
 **Lua 5.2.** `//` is a syntax error. Use `math.floor(a / b)`.
 

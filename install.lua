@@ -1,8 +1,10 @@
 --- CC-Windows installer.
 --
 -- Fetches every file of the OS from GitHub over HTTP and lays them out on
--- the filesystem. Re-running it upgrades an existing install in place;
--- /ccwin/settings.cfg is never touched.
+-- the filesystem. Every Lua file is checked to be really compilable before
+-- it is installed; /ccwin/version is plain data (the marker the in-OS
+-- updater compares with GitHub). Re-running it upgrades an existing
+-- install in place; /ccwin/settings.cfg is never touched.
 --
 -- Bootstrap on a CraftOS computer (CC:CE + CC-Graphics, http enabled):
 --
@@ -36,6 +38,7 @@ local BASE = "https://raw.githubusercontent.com/"
 local FILES = {
     { "ccwin/startup.lua",   "/startup.lua" },
     { "ccwin/main.lua",      "/ccwin/main.lua" },
+    { "ccwin/version",       "/ccwin/version" },
 
     { "ccwin/core/backdrop.lua", "/ccwin/core/backdrop.lua" },
     { "ccwin/core/dialogs.lua",  "/ccwin/core/dialogs.lua" },
@@ -65,8 +68,10 @@ local function die(msg)
     error(msg, 0)
 end
 
---- Read a file back and make sure it is really Lua, not an error page.
-local function verify(path)
+--- Read a file back. Lua must really compile (so a truncated download or an
+--- HTML error page is caught), non-Lua files (ccwin/version) only have to
+--- be there and be non-empty - nothing is ever executed here.
+local function verify(path, isLua)
     local h = fs.open(path, "r")
     if not h then
         return nil, "cannot read it back"
@@ -76,6 +81,9 @@ local function verify(path)
 
     if not src or src == "" then
         return nil, "it is empty"
+    end
+    if not isLua then
+        return true
     end
     local fn, err = load(src, "@" .. path)
     if not fn then
@@ -105,7 +113,7 @@ local function install(src, dst, index, total)
              "  check the repo URL, branch and that http is enabled."):format(url))
     end
 
-    local ok, why = verify(tmp)
+    local ok, why = verify(tmp, src:match("%.lua$") ~= nil)
     if not ok then
         fs.delete(tmp)
         die(("bad download: %s\n  %s"):format(url, why))
