@@ -256,9 +256,15 @@ function wm.call(win, method, ...)
     local ok, err = pcall(fn, win.instance, ...)
     if not ok then wm.crash(win, err) end
     -- Applications mark their own window dirty (either `win.dirty` or
-    -- `self.dirty`); make that reach the shell.
-    if win.dirty or win.instance.dirty then
+    -- `self.dirty`); make that reach the shell. `wm.crash` drops the
+    -- instance, so re-check before touching it: indexing the cleared
+    -- instance here was `'instance' (a nil value)`, and because this runs
+    -- inside the event loop the whole OS went down with it.
+    if win.dirty then
         win.dirty = nil
+        wm.dirty = true
+    end
+    if win.instance and win.instance.dirty then
         win.instance.dirty = nil
         wm.dirty = true
     end

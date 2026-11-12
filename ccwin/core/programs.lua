@@ -7,7 +7,7 @@
 --        --- CC-Windows - Solitaire
 --
 --      That is all detection is: looking at a file never runs it, so
---      dropping scripts into /programs (or onto the desktop) cannot fire
+--      dropping scripts into ccwin/apps (or onto the desktop) cannot fire
 --      off code just by being scanned.
 --
 --   2. Opening one happens in two stages. The header'd file is loaded in
@@ -25,7 +25,7 @@
 -- A program opened this way is handed the shared context, wherever it
 -- lives: one on a disc still reaches every core app and module through
 -- `ctx` (and through the `ccwin` global that main.lua installs), so a
--- copy on a drive is exactly as powerful as one in /programs.
+-- copy on a drive is exactly as powerful as one in /ccwin/apps.
 local programs = {}
 
 local wm
@@ -133,7 +133,7 @@ end
 --- The same file, loaded the way it will really run.
 -- Full environment - fs, dofile, the `ccwin` global, everything - so a
 -- program on a disc can pull in its own libraries exactly like one in
--- /programs. Only called after the sandboxed probe said "yes, this is an
+-- ccwin/apps. Only called after the sandboxed probe said "yes, this is an
 -- app", so the real side effects of the top level happen exactly once.
 -- Returns the app table, or nil plus the reason.
 function programs.loadReal(path)
@@ -198,6 +198,140 @@ function programs.scan(dir)
         end
     end
     return out
+end
+
+---------------------------------------------------------------------------
+-- picture icons
+--
+-- A program may ship the picture its desktop link shows - inside itself, as
+-- a run of comment lines, or beside it, as <name>.nfp / <name>.cwp (the two
+-- formats Paint writes). Resolving an icon only ever reads text, so looking
+-- at a program to find its picture never runs it.
+--
+--     --- icon:
+--     --- 000f000
+--     --- 00ff f00        (one comment line per picture row, one hex
+--     --- ...              digit per pixel, the same digits as NFP)
+---------------------------------------------------------------------------
+
+local MAX_ICON = 64    -- desktop icons are small; a bigger picture is not one
+
+--- Picture rows, checked: rectangular, hex digits, tiny.
+-- The rows themselves are what gets stored in a .lnk, so this doubles as
+-- the check on a picture read back from disk. Returns the rows or nil.
+function programs.iconRows(rows)
+    if type(rows) ~= "table" then return nil end
+    local h = #rows
+    if h < 1 or h > MAX_ICON then return nil end
+    local w = type(rows[1]) == "string" and #rows[1] or 0
+    if w < 1 or w > MAX_ICON then return nil end
+    for i = 1, h do
+        local r = rows[i]
+        if type(r) ~= "string" or #r ~= w or not r:match("^%x+$") then
+            return nil
+        end
+    end
+    return rows
+end
+
+--- A picture file (NFP: one hex digit per pixel; CWP: Paint's "CCWIN1"
+-- header plus two hex digits per pixel). Returns its rows or nil.
+local function pictureFile(path)
+    local f = fs.open(path, "r")
+    if not f then return nil end
+    local rows = {}
+    local first = f.readLine()
+    if not first then
+        f.close()
+        return nil
+    end
+    if first:match("^CCWIN1") then
+        local w = tonumber(first:match("^CCWIN1%s+(%d+)"))
+        local h = tonumber(first:match("^CCWIN1%s+%d+%s+(%d+)"))
+        if not w or not h or w < 1 or h < 1 or w > MAX_ICON or h > MAX_ICON then
+            f.close()
+            return nil
+        end
+        for _ = 1, h do
+            local line = f.readLine()
+            if not line then break end
+            local out = {}
+            for x = 1, math.min(w, math.floor(#line / 2)) do
+                -- a canvas byte is the palette index itself, i.e. exactly
+                -- the digit NFP uses for that colour
+                local v = tonumber(line:sub(x * 2 - 1, x * 2), 16) or 15
+                if v > 15 then v = 15 end
+                out[x] = string.format("%x", v)
+            end
+            rows[#rows + 1] = table.concat(out)
+        end
+    else
+        rows[1] = first
+        while true do
+            local line = f.readLine()
+            if not line then break end
+            rows[#rows + 1] = line
+        end
+    end
+    f.close()
+    return programs.iconRows(rows)
+end
+
+--- The picture written into the program as comment lines:
+--     --- icon:
+--     --- 00f
+-- The block ends at the first line that is not a hex comment row, so the
+-- program stays ordinary Lua either way.
+local function embeddedIcon(path)
+    local f = fs.open(path, "r")
+    if not f then return nil end
+    local rows, reading = nil, false
+    while true do
+        local line = f.readLine()
+        if not line then break end
+        local body = line:match("^%-%-%-?%s*(.*)$")
+        if not body then
+            if reading then break end
+        elseif not reading then
+            if body:lower():match("^icon:%s*$") then
+                reading, rows = true, {}
+            end
+        elseif body:match("^%x+$") then
+            rows[#rows + 1] = body
+        else
+            break
+        end
+    end
+    f.close()
+    return programs.iconRows(rows)
+end
+
+--- A picture sitting beside the program: mine.lua -> mine.nfp / mine.cwp.
+local function siblingIcon(path)
+    local dir = fs.getDir(path)
+    local name = fs.getName(path)
+    local stem = name:match("(.+)%.[^%.]+$") or name
+    for _, suffix in ipairs { ".nfp", ".cwp" } do
+        local pic = fs.combine(dir, stem .. suffix)
+        if fs.exists(pic) and not fs.isDir(pic) then
+            local rows = pictureFile(pic)
+            if rows then return rows end
+        end
+    end
+    return nil
+end
+
+--- The picture a program ships for its desktop link, or nil when it has
+-- none (the link then keeps the usual glyph icon).
+function programs.icon(path)
+    if type(path) ~= "string" or path == "" or fs.isDir(path) then
+        return nil
+    end
+    local ok, rows = pcall(function()
+        return embeddedIcon(path) or siblingIcon(path)
+    end)
+    if ok then return rows end
+    return nil
 end
 
 return programs

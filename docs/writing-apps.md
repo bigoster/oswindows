@@ -9,7 +9,7 @@ This guide covers the three ways to write software for CC-Windows:
    input and pixel drawing. These are Lua modules that CC-Windows loads at
    boot.
 3. **Drop-in programs** — the same kind of GUI app (or a plain script),
-   installed by copying it into `/programs` or onto the desktop. A
+   installed by copying it into `/ccwin/apps` or onto the desktop. A
    `--- CC-Windows` first line is all it takes for the OS to link it and
    open it the right way — no registration (section 19).
 
@@ -150,7 +150,7 @@ imports and is covered by an automated test.
 Note the first line, `--- CC-Windows - Hello World sample app.`: it is a
 plain comment to the OS's own boot loading, but it is also the marker that
 makes the file recognisable as a CC-Windows program when it is copied
-into `/programs` — see [section 19](#19-drop-in-programs).
+into `/ccwin/apps` — see [section 19](#19-drop-in-programs).
 
 To make it appear you also have to register it — that is
 [section 3](#3-registering-an-app) — or skip registration entirely and
@@ -1079,7 +1079,7 @@ from `install.lua` it never reaches players.
 
 Registering an app (section 3) is how software ships *with* the OS. To
 **install** something, you do not register anything: copy the file into
-**`/programs`** (the OS keeps that folder present), or drop it straight
+**`/ccwin/apps`** (the OS keeps that folder present), or drop it straight
 onto the desktop, and the OS takes it from there.
 
 ### The one-line contract
@@ -1096,16 +1096,18 @@ return app
 ```
 
 Finding that out reads exactly one line of text — a file is never
-executed just by being scanned, so scripts lying in `/programs` cannot
+executed just by being scanned, so scripts lying in `/ccwin/apps` cannot
 fire off code until somebody actually opens them.
 
 ### What the OS does with it
 
-* **Auto desktop link.** On boot and on every Refresh, `/programs` and
+* **Auto desktop link.** On boot and on every Refresh, `/ccwin/apps` and
   any loose `.lua` sitting on the desktop are scanned; each header'd file
   gets a `kind = "file"` shortcut (icon `terminal`, label = file name
   minus `.lua`). A program that already has a link is skipped, so the scan
-  is cheap enough to run every time.
+  is cheap enough to run every time. The OS's own apps live in that folder
+  too — they are skipped, since each already has a link of its own keyed by
+  its app id.
 * **Opening it the right way.** A desktop link, a double-click in Files
   and `ccwin.open(path)` all make the same decision:
   1. The header is there, so the file is loaded in a **sandbox** — no fs
@@ -1124,6 +1126,41 @@ fire off code until somebody actually opens them.
   The sandboxed probe means the *decision* never causes side effects, and
   the real run happens exactly once either way.
 
+### The picture your link shows
+
+A desktop link draws a glyph icon by default. A program can ship its own
+picture instead — drawn scaled into the icon cell — in either of two
+places.
+
+**Beside the program**, named after it: `solitaire.lua` looks for
+`solitaire.nfp` (the format Paint writes for a `.nfp` name) and then
+`solitaire.cwp` (Paint's own `CCWIN1` format) in the same folder.
+
+**Inside the program**, as a run of comment lines:
+
+```lua
+--- CC-Windows - Solitaire
+--- icon:
+--- 000f000
+--- 0f00f00
+--- 000f000
+local app = {}
+```
+
+A comment line reading `icon:` opens the block; every following comment
+line made of hex digits is one picture row, and the block ends at the
+first line that is not — so the file stays ordinary Lua either way.
+
+Either way it is the NFP picture: up to 64×64, one hex digit per pixel,
+that digit being the palette index (`0` white … `f` black). Finding the
+picture only ever *reads* text — the program is never executed for it.
+
+The rows are copied into the link (`.lnk`) when the link is made and drawn
+scaled into the icon box (aspect kept, centred) on every frame, so the link
+keeps its picture even if the program is edited later. Links made before a
+program gained a picture pick it up on the next Refresh, and a program with
+no picture anywhere keeps the usual glyph icon.
+
 ### Rules for the top level
 
 * **Keep the top level pure enough to `return app`.** During the probe it
@@ -1139,7 +1176,7 @@ fire off code until somebody actually opens them.
 ### Opening it yourself
 
 ```lua
-ccwin.open("/programs/solitaire.lua")     -- the OS way (window or console)
+ccwin.open("/ccwin/apps/solitaire.lua")   -- the OS way (window or console)
 ccwin.open("/disk/games/solitaire.lua")   -- same decision, any drive
 ccwin.launch("editor", { path = ... })    -- a registered core app by id
 ```
@@ -1150,7 +1187,7 @@ double-click runs it, the second entry opens the editor.
 
 ### From a disc, in a window, with everything
 
-Nothing about `/programs` is special except that it is scanned for links.
+Nothing about `/ccwin/apps` is special except that it is scanned for links.
 A header'd app opened from `/disk/...` gets the real environment and the
 shared context, so it reaches the core apps and libraries exactly like one
 installed on the main drive:

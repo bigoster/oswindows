@@ -37,12 +37,14 @@ local SIZES = {
 }
 
 local SHORTCUT_DIR = "/desktop"
--- Programs dropped here get a desktop link of their own (see
--- linkPrograms), which is what makes "copy a program in, reboot, there it
--- is" work without an installer.
-local PROGRAMS_DIR = "/programs"
 local BASE = (rawget(_G, "CCWIN_DIR") ~= nil and rawget(_G, "CCWIN_DIR") ~= "")
     and rawget(_G, "CCWIN_DIR") or "/ccwin"
+-- Programs dropped here get a desktop link of their own (see
+-- linkPrograms), which is what makes "copy a program in, reboot, there it
+-- is" work without an installer. The folder doubles as the home of the
+-- OS's own apps, whose stems are skipped by the scan (they already have a
+-- link of their own, seeded with their app id).
+local PROGRAMS_DIR = fs.combine(BASE, "apps")
 local SEED_FLAG = fs.combine(BASE, "desktop.seeded")
 
 function desktop.attach(d)
@@ -120,11 +122,22 @@ local function writeShortcut(e)
         target = e.target,
         label = e.label,
         icon = e.icon,
+        pic = e.pic,
         x = e.x,
         y = e.y,
     }))
     f.close()
     return true
+end
+
+--- The picture a .lnk claims to carry. A .lnk is a file like any other, so
+-- it is checked exactly like a freshly read icon before anything draws it:
+-- a small rectangle of hex digits, or nothing at all.
+local function readPic(rows)
+    if programs and programs.iconRows then
+        return programs.iconRows(rows)
+    end
+    return nil
 end
 
 local function loadEntries()
@@ -146,6 +159,7 @@ local function loadEntries()
                         target = data.target,
                         label = tostring(data.label or data.target),
                         icon = data.icon or "file",
+                        pic = readPic(data.pic),
                         x = data.x,
                         y = data.y,
                     }
@@ -193,15 +207,43 @@ local function iconFor(path)
     return "file"
 end
 
+--- The program file a link stands for. An installed app's link carries its
+-- app id (that is what keeps it working wherever the OS lives), but the
+-- program itself is the file of that name in the programs folder.
+local function linkSource(e)
+    if e.kind == "app" then
+        return fs.combine(PROGRAMS_DIR, e.target .. ".lua")
+    end
+    return e.target
+end
+
+--- Give the link the picture its program ships, when it has one and the
+-- link does not carry one yet. True means the .lnk has to be written back.
+local function resolvePic(e)
+    if e.pic or not programs then return false end
+    local src = linkSource(e)
+    if type(src) ~= "string" or not fs.exists(src) or fs.isDir(src) then
+        return false
+    end
+    local pic = programs.icon(src)
+    if not pic then return false end
+    e.pic = pic
+    return true
+end
+
 local function createShortcut(spec)
     local e = {
         kind = spec.kind == "file" and "file" or "app",
         target = spec.target,
         label = sanitise(spec.label),
         icon = spec.icon or "file",
+        pic = readPic(spec.pic),
     }
     e.file = freeFileName(e.label)
     e.x, e.y = nextFreeSlot()
+    -- a link made right now also gets the picture its target ships, so it
+    -- does not have to wait for the next Refresh to look right
+    if not e.pic then resolvePic(e) end
     entries[#entries + 1] = e
     writeShortcut(e)
     return e
@@ -286,21 +328,31 @@ local function entryByFile(file)
 end
 
 --- Give every CC-Windows program a desktop link of its own.
--- Two folders are scanned: /programs, and any loose .lua dropped straight
--- onto the desktop (the desktop only lists .lnk files, so without this
--- such a program would be invisible). Only a file whose first line says
--- `--- CC-Windows - ...` qualifies - looking at a file never runs it -
--- and a program that already has a link is skipped, so this is cheap
--- enough to run on every rebuild.
+-- Two folders are scanned: the programs folder (ccwin/apps, where the OS's
+-- own apps live too - those are skipped, they already have a link keyed by
+-- their app id), and any loose .lua dropped straight onto the desktop (the
+-- desktop only lists .lnk files, so without this such a program would be
+-- invisible). Only a file whose first line says `--- CC-Windows - ...`
+-- qualifies - looking at a file never runs it - and a program that already
+-- has a link is skipped, so this is cheap enough to run on every rebuild.
+--
+-- Links also carry the picture their program ships (see core/programs.lua):
+-- one is resolved when the link is made, and one gained later - the
+-- program grew a picture, or the link predates the feature - is backfilled
+-- here and written back to the .lnk.
 local function linkPrograms()
     if not programs then return end
     -- The programs folder belongs to the OS: keep it present so "copy a
-    -- program into /programs" always has somewhere to land.
+    -- program into it" always has somewhere to land.
     if not fs.exists(PROGRAMS_DIR) then pcall(fs.makeDir, PROGRAMS_DIR) end
     local made = false
     local function scan(dir)
         for _, target in ipairs(programs.scan(dir)) do
-            local known = false
+            -- the OS's own apps sit in the programs folder as well; their
+            -- links are seeded with the app id, a second one keyed by the
+            -- file would be a duplicate
+            local stem = fs.getName(target):gsub("%.[%w]+$", "")
+            local known = appDef(stem) and true or false
             for _, e in ipairs(entries) do
                 if e.target == target then
                     known = true
@@ -311,8 +363,9 @@ local function linkPrograms()
                 createShortcut {
                     kind = "file",
                     target = target,
-                    label = fs.getName(target):gsub("%.[%w]+$", ""),
+                    label = stem,
                     icon = iconFor(target),
+                    pic = programs.icon(target),
                 }
                 made = true
             end
@@ -320,6 +373,10 @@ local function linkPrograms()
     end
     scan(PROGRAMS_DIR)
     scan(SHORTCUT_DIR)
+    -- backfill: a link made before its program had a picture
+    for _, e in ipairs(entries) do
+        if resolvePic(e) then writeShortcut(e) end
+    end
     if made then
         loadEntries()
         layoutIcons()
@@ -548,6 +605,31 @@ end
 -- background: wallpaper + desktop icons
 ---------------------------------------------------------------------------
 
+--- A shipped picture drawn as an icon: scaled to the glyph box (nearest
+-- neighbour, aspect kept, centred) so a 16x16 drawing and a 48x32 one both
+-- land in the same slot the glyph icons use. The rows hold NFP digits,
+-- which are palette indices - the same bytes the frame buffer wants.
+local function drawPictureIcon(dc, pic, x, y, box)
+    local h = #pic
+    local w = #pic[1]
+    if w < 1 or h < 1 then return false end
+    local sc = math.min(box / w, box / h)
+    local ow = math.max(1, math.floor(w * sc + 0.5))
+    local oh = math.max(1, math.floor(h * sc + 0.5))
+    local px = x + math.floor((box - ow) / 2)
+    local py = y + math.floor((box - oh) / 2)
+    for row = 1, oh do
+        local src = pic[math.floor((row - 1) * h / oh) + 1]
+        local out = {}
+        for col = 1, ow do
+            local sx = math.floor((col - 1) * w / ow) + 1
+            out[col] = string.char(tonumber(src:sub(sx, sx), 16) or 15)
+        end
+        dc:blit(px, py + row - 1, table.concat(out))
+    end
+    return true
+end
+
 function desktop.drawBack(rootDC)
     local W, H = gfx.size()
     local fallback = string.rep(string.char(C.wpNavy), W)
@@ -573,7 +655,9 @@ function desktop.drawBack(rootDC)
             rootDC:fill(g.x + 2, g.y + 1, m.w - 4, selH, C.accentFaint)
             rootDC:rect(g.x + 2, g.y + 1, m.w - 4, selH, C.accent)
         end
-        icons.draw(rootDC, e.icon, ix, iy, m.scale)
+        if not (e.pic and drawPictureIcon(rootDC, e.pic, ix, iy, iconPx)) then
+            icons.draw(rootDC, e.icon, ix, iy, m.scale)
+        end
 
         -- label: up to two lines of ten characters, with a drop shadow
         local label = e.label

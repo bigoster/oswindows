@@ -7,7 +7,7 @@
 -- its own prompt.
 --
 --   fabric_agent
---   fabric> run 7 /programs/hello.lua
+--   fabric> run 7 /ccwin/apps/hello.lua
 --
 -- Commands: run <id> <path>, peers, hello, help, exit.
 -- What travels over the wire is the same protocol CC-Windows speaks:

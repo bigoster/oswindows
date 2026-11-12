@@ -171,7 +171,7 @@ list.
 Copying a program in *is* the install — no lists to edit, no installer to
 run:
 
-1. Put the file in **`/programs`** (the OS keeps this folder present), or
+1. Put the file in **`/ccwin/apps`** (the OS keeps this folder present), or
    drop it straight onto the desktop.
 2. If its first line says so (see below), the OS links it on the desktop
    automatically — on the next Refresh or reboot as well.
@@ -185,7 +185,7 @@ line** says so:
 ```
 
 Detection only ever *reads* that line: looking at a file never runs it, so
-dropping scripts into `/programs` cannot fire off code just by being
+dropping scripts into `/ccwin/apps` cannot fire off code just by being
 scanned.
 
 **Opening one.** With the header, the OS loads the file in a sandbox first
@@ -203,15 +203,36 @@ returns an app table — `id`, `name`, `create`: the same contract
 In Files, double-clicking a `.lua` runs it this way; the right-click menu
 still offers **Open in Notepad** when you want to edit it instead.
 
+**The picture on the link.** A program may also ship the picture its
+desktop link shows, in either of two places — a *Pictures* file sitting
+beside it (`game.nfp`, or `game.cwp`), or a block of comment lines written
+into the program itself:
+
+```lua
+--- CC-Windows - Solitaire
+--- icon:
+--- 000f000
+--- 0f00f00
+--- ...
+local app = {}
+```
+
+One hex digit per pixel, the same digits Paint writes as `.nfp` (colour
+indices, up to 64×64). The picture is resolved by *reading* the files — the
+program is never executed to find it — copied into the link, and drawn
+scaled into the icon cell; a program with neither falls back to the usual
+glyph icon. Links made before a program gained a picture pick it up on the
+next Refresh.
+
 **Anywhere on the filesystem.** The OS installs a `ccwin` global at boot,
 so a program on a disc reaches the core apps and libraries from wherever
-it lives — a copy on a drive is exactly as powerful as one in `/programs`:
+it lives — a copy on a drive is exactly as powerful as one in `/ccwin/apps`:
 
 ```lua
 ccwin.dir                        -- "/ccwin"
 ccwin.path("core/widgets.lua")   -- "/ccwin/core/widgets.lua"
 ccwin.launch("editor", { path = ... })   -- open a core app
-ccwin.open("/programs/game.lua")         -- open any program the OS way
+ccwin.open("/ccwin/apps/game.lua")       -- open any program the OS way
 ```
 
 Console-run programs also get `arg = { [0] = path }`, and both kinds get
@@ -230,7 +251,7 @@ to another computer and watch it run there:
 * The other side does not need CC-Windows: a plain CraftOS computer runs
   `/ccwin/programs/fabric_agent.lua`, which answers `hello`s, runs what it
   is sent and can push a program back the other way
-  (`fabric> run 7 /programs/hello.lua`; also `peers`, `hello`, `help`,
+  (`fabric> run 7 /ccwin/apps/hello.lua`; also `peers`, `hello`, `help`,
   `exit`). A machine that *does* run CC-Windows opens the received program
   in a console window of its own.
 * The **System** app gains a *Fabric* section (link state and peer names)
@@ -301,8 +322,9 @@ position persisted on disk, switching icon views, and inside Files: right-click
 finding it really moved on disk. It then exercises the two new halves: the
 fabric link (Run on → the exact message that went over the wire → the peer's
 answer in the status bar, plus incoming runs including a source-only drop into
-`/received`), and installing/running programs (auto-linking from `/programs`
-and loose desktop `.lua`, header detection that never executes anything,
+`/received`), and installing/running programs (auto-linking from
+`/ccwin/apps` and loose desktop `.lua`, the picture a program ships for its
+link, header detection that never executes anything,
 windowed app opens, console fallback for header'd non-apps, Explorer
 double-click vs Open in Notepad, a disc program reaching the core apps through
 `ctx`, and the `ccwin` global).
