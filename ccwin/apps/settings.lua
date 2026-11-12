@@ -7,7 +7,7 @@ app.icon = "settings"
 app.defaultSize = { 236, 158 }
 
 local theme, widgets, C
-local state, save
+local state, save, dialogs
 
 local WALLPAPERS = {
     { id = "landscape", label = "Landscape" },
@@ -20,6 +20,7 @@ function app.create(win, opts, ctx)
     theme, widgets, C = ctx.theme, ctx.widgets, ctx.theme.C
     state = ctx.state
     save = state.save
+    dialogs = ctx.dialogs
 
     local self = {
         rects = {},
@@ -34,6 +35,32 @@ function app.create(win, opts, ctx)
         if state.applySettings then state.applySettings() end
     end
     self.setState = setState
+
+    --- File picker for the picture wallpaper: starts where the current
+    --- picture lives (or the last browsed folder), accepts .nfp/.cwp files,
+    --- and only flips the wallpaper mode once a file is actually picked.
+    local function pickPicture()
+        local s = state.settings
+        local start = s.lastPath or "/"
+        if type(s.wallpaperPath) == "string" and s.wallpaperPath ~= "" then
+            local dir = s.wallpaperPath:match("^(.*)[/\\][^/\\]+$")
+            if dir == "" then dir = "/" end
+            if dir and fs.exists(dir) then start = dir end
+        end
+        dialogs.open(win, {
+            type = "file",
+            title = "Choose wallpaper",
+            path = start,
+            filter = function(p)
+                if fs.isDir(p) then return true end
+                return p:match("%.nfp$") ~= nil or p:match("%.cwp$") ~= nil
+            end,
+            onPick = function(p)
+                s.wallpaperPath = p
+                setState("wallpaper", "picture")
+            end,
+        })
+    end
 
     -------------------------------------------------------------------
     -- drawing
@@ -70,33 +97,52 @@ function app.create(win, opts, ctx)
         y = section(dc, y + 2, "Wallpaper")
         y = toggleButtons(dc, y, WALLPAPERS, s.wallpaper, "wall")
 
+        -- Row 2: the picture picker is always here. Solid mode tucks its
+        -- swatches in beside it (narrower than before so both fit), picture
+        -- mode shows the chosen file name instead.
+        local picW = dc:textWidth("Picture...") + 16
+        widgets.button(dc, 8, y, picW, 15, "Picture...",
+            { state = self.hover == "pic" and "hover" or nil })
+        self.rects["pic"] = { 8, y, picW, 15 }
+
+        local tx = 8 + picW + 6
         if s.wallpaper == "solid" then
-            local x = 8
             for i, colour in ipairs(SOLID_COLOURS) do
-                local r = { x, y, 16, 14, colour }
-                dc:fill(x, y, 16, 14, colour)
+                dc:fill(tx, y, 14, 14, colour)
                 if s.wallpaperColour == colour then
-                    dc:rect(x, y, 16, 14, C.accent)
-                    dc:rect(x - 1, y - 1, 18, 16, C.white)
+                    dc:rect(tx, y, 14, 14, C.accent)
+                    dc:rect(tx - 1, y - 1, 16, 16, C.white)
                 else
-                    dc:rect(x, y, 16, 14, C.bevelDark)
+                    dc:rect(tx, y, 14, 14, C.bevelDark)
                 end
-                self.rects["col" .. i] = r
-                x = x + 20
+                self.rects["col" .. i] = { tx, y, 14, 14, colour }
+                tx = tx + 16
             end
-            y = y + 20
+        elseif s.wallpaper == "picture" then
+            local name = "no file chosen"
+            if type(s.wallpaperPath) == "string" and s.wallpaperPath ~= "" then
+                name = fs.getName(s.wallpaperPath)
+                if not fs.exists(s.wallpaperPath) then name = name .. " (missing)" end
+            end
+            local room = math.floor((dc.w - 8 - tx) / 6)
+            if #name > room and room > 3 then
+                name = name:sub(1, room - 2) .. ".."
+            end
+            dc:text(tx, y + 3, name, C.textMuted)
         end
+        y = y + 20
 
         y = section(dc, y + 2, "Taskbar")
         local checked = s.clockSeconds
         widgets.checkbox(dc, 8, y, checked, "Show seconds in the clock",
             self.hover == "sec")
         self.rects["sec"] = { 8, y, 180, 11, not checked }
-        y = y + 18
 
-        dc:fill(8, y, dc.w - 16, 1, C.bevelMid)
-        dc:text(8, y + 6, "CC-Windows 1.0 for CC:CE", C.textMuted)
-        dc:text(8, y + 16, "Rendering: CC-Graphics mode 2", C.textMuted)
+        -- One footer line pinned to the bottom: the picture row needs the
+        -- pixels the old two-line footer used to hold.
+        local fy = h - 11
+        dc:fill(8, fy, dc.w - 16, 1, C.bevelMid)
+        dc:text(8, fy + 1, "CC-Windows 1.0 \194\183 CC-Graphics mode 2", C.textMuted)
     end
 
     -------------------------------------------------------------------
@@ -125,6 +171,8 @@ function app.create(win, opts, ctx)
             if state.settings.wallpaper ~= "solid" then
                 state.settings.wallpaper = "solid"
             end
+        elseif key == "pic" then
+            pickPicture()
         elseif key == "sec" then
             setState("clockSeconds", r[5])
         end

@@ -73,7 +73,7 @@ the exit status.
     │   ├── menu.lua      (right-click context menus and submenus)
     │   ├── wm.lua        (window list, z-order, focus, drag/resize)
     │   ├── desktop.lua   (shortcuts, wallpaper, taskbar, start menu, clock)
-    │   ├── backdrop.lua  (wallpaper renderers)
+    │   ├── backdrop.lua  (wallpaper renderers, picture loading)
     │   ├── fabric.lua    (CC:CE fabric link — "Run on", incoming programs)
     │   └── programs.lua  (recognising and opening CC-Windows programs)
     ├── apps/
@@ -126,7 +126,10 @@ exactly like re-running the installer.
 
 **Desktop**
 
-- Pixel wallpaper (Landscape / Gradient / Solid, with selectable solid colour)
+- Pixel wallpaper (Landscape / Gradient / Solid, with selectable solid
+  colour, or **Picture**: any `.nfp` / `.cwp` image saved on the computer,
+  stretched to fill the screen — a broken or missing file falls back to the
+  landscape)
 - **Shortcut links**: on first boot the OS writes a `.lnk` file per installed
   program into `/desktop`, and the desktop shows them as icons — see
   [Desktop shortcuts](#desktop-shortcuts)
@@ -159,7 +162,7 @@ exactly like re-running the installer.
 | **Console** | A real CraftOS shell in a window. The shell runs in its own coroutine against a custom terminal object; only the focused console receives events, and the global `term` redirect follows focus |
 | **Notepad** | Text editor with cursor movement, Home/End, Tab, Ctrl shortcuts, save dialogs |
 | **Paint** | Pencil, Line, Box, Fill, Erase, Pick (P/L/B/F/E/I); 48-colour palette; single-level undo; load/save images |
-| **Settings** | Theme, wallpaper, clock format; persisted to `/ccwin/settings.cfg` |
+| **Settings** | Theme, wallpaper (Landscape / Gradient / Solid / **Picture — pick any `.nfp` or `.cwp` file saved on the computer**), clock format; persisted to `/ccwin/settings.cfg` |
 | **System** | Computer ID, label, OS version, free/total disk space, peripheral list, plus the **OS updater**: *Check for updates* compares `/ccwin/version` with GitHub and *Install update* replaces the system files that changed |
 | **Browser** | Small HTML browser: `http.request` fetches (the answer arrives via `feed`), headings, lists, tables, quotes, code and buttons lay out like a real page, only the visible lines are drawn, back/forward history, and `file://` opens folders and text files |
 

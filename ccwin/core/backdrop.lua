@@ -10,7 +10,7 @@ function backdrop.attach(g, t)
     gfx, theme, C = g, t, t.C
 end
 
-local char, rep, concat = string.char, string.rep, table.concat
+local char, rep, concat, byte = string.char, string.rep, table.concat, string.byte
 
 local function makeRow(w, colourAt)
     local parts, last, start = {}, nil, 0
@@ -150,6 +150,88 @@ local function buildSolid(w, h, colour)
     return rows, h
 end
 
+---------------------------------------------------------------------------
+-- picture wallpapers (any .nfp / .cwp file on disk)
+---------------------------------------------------------------------------
+
+local MAX_BYTES = 1048576 -- refuse to slurp in anything bigger
+local MAX_DIM = 4096       -- and anything claiming to be absurdly large
+
+--- Load an NFP (one CC colour digit per pixel) or CWP (`CCWIN1 w h` header
+--- plus two hex digits per pixel) picture. Returns `rows, w, h` - rows of
+--- palette-index bytes - or nil when the file is missing, empty or malformed,
+--- in which case the caller falls back to another wallpaper instead of
+--- showing an error.
+local function loadPicture(path)
+    if type(path) ~= "string" or path == "" then return nil end
+    local okSize, size = pcall(fs.getSize, path)
+    if not okSize or type(size) ~= "number" or size > MAX_BYTES then return nil end
+    local f = fs.open(path, "r")
+    if not f or not f.readLine then return nil end
+
+    local ok, rows, w, h = pcall(function()
+        local first = f.readLine()
+        if not first then return nil end
+        local out = {}
+        if first:match("^CCWIN1") then
+            local iw, ih = first:match("^CCWIN1%s+(%d+)%s+(%d+)")
+            iw, ih = tonumber(iw), tonumber(ih)
+            if not iw or not ih or iw < 1 or ih < 1 or iw > MAX_DIM or ih > MAX_DIM then
+                return nil
+            end
+            for _ = 1, ih do
+                local line = f.readLine()
+                if not line then break end
+                local buf = {}
+                for i = 1, iw do
+                    buf[i] = char(tonumber(line:sub(i * 2 - 1, i * 2), 16) or 15)
+                end
+                out[#out + 1] = concat(buf)
+            end
+            if #out == 0 then return nil end
+            return out, iw, #out
+        end
+        -- NFP: one character per pixel, CC colour digits.
+        out[1] = first
+        while #out < MAX_DIM do
+            local line = f.readLine()
+            if not line then break end
+            out[#out + 1] = line
+        end
+        local widest = 0
+        for y = 1, #out do
+            local row = out[y]
+            if #row > MAX_DIM then row = row:sub(1, MAX_DIM) end
+            local buf = {}
+            for x = 1, #row do
+                buf[x] = char(tonumber(row:sub(x, x), 16) or 15)
+            end
+            out[y] = concat(buf)
+            if #out[y] > widest then widest = #out[y] end
+        end
+        if widest == 0 then return nil end
+        return out, widest, #out
+    end)
+    pcall(f.close)
+    if not ok or not rows then return nil end
+    return rows, w, h
+end
+
+--- Nearest-neighbour stretch of a loaded picture to fill the whole screen.
+local function buildPicture(w, h, rows, iw, ih)
+    local out = {}
+    for y = 0, h - 1 do
+        local src = rows[math.min(ih - 1, math.floor(y * ih / h)) + 1] or rows[1]
+        local len = #src
+        out[y + 1] = makeRow(w, function(x)
+            local sx = math.floor(x * iw / w) + 1
+            if sx > len then sx = len end
+            return byte(src, sx) or 0
+        end)
+    end
+    return out, h
+end
+
 --- Build a wallpaper. Returns an array of `w`-character row strings.
 function backdrop.build(w, h, settings)
     local kind = settings.wallpaper or "landscape"
@@ -157,6 +239,13 @@ function backdrop.build(w, h, settings)
         return buildGradient(w, h)
     elseif kind == "solid" then
         return buildSolid(w, h, settings.wallpaperColour or C.wpBlue)
+    elseif kind == "picture" then
+        local ok, rows, iw, ih = pcall(loadPicture, settings.wallpaperPath)
+        if ok and rows and iw and ih and iw >= 1 and ih >= 1 then
+            return buildPicture(w, h, rows, iw, ih)
+        end
+        -- broken or missing file: never leave the desktop bare
+        return buildLandscape(w, h)
     end
     return buildLandscape(w, h)
 end

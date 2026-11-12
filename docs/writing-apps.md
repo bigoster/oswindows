@@ -816,7 +816,8 @@ Settings keys (see `ccwin/main.lua` `DEFAULTS`):
 
 ```lua
 state.settings.theme        -- "light" | "dark"
-state.settings.wallpaper    -- wallpaper id used by core/backdrop.lua
+state.settings.wallpaper    -- "landscape" | "gradient" | "solid" | "picture"
+state.settings.wallpaperPath-- file the "picture" wallpaper shows (.nfp / .cwp)
 state.settings.clockSeconds -- show seconds in the taskbar clock
 state.settings.lastPath     -- last folder used by file dialogs
 ```
