@@ -100,7 +100,7 @@ The **System** app has an *Updates* band at the top with one button:
 
 - **Check for updates** fetches `ccwin/version` from the repository — a
   single small download — and compares it with `/ccwin/version` on the
-  computer. It reports either `Up to date - version 1.1 is installed.` or
+  computer. It reports either `Up to date - version 1.2 is installed.` or
   `Update available: <local> to <remote>`.
 - **Install update** then downloads `files.txt` (the file list), fetches
   every system file through it and replaces the ones whose bytes differ
@@ -135,9 +135,13 @@ exactly like re-running the installer.
   starting in `/ccwin/images`, so you can show any `.nfp` / `.cwp` saved on
   the computer — the shipped **landscape** (the default background) and
   **gradient** sit there as plain image files beside your own pictures, and
-  the mode only flips once a file is really picked; *Solid* offers eight
-  selectable colours. A broken or missing picture falls back to the
-  landscape
+  the mode only flips once a file is really picked; *Solid* fills the
+  screen with any `#RRGGBB` hex colour typed into Settings. A broken or
+  missing picture falls back to the landscape
+- **Accent colour**: the standard blue behind window bars, buttons, the
+  Start menu and taskbar highlights can be changed to any `#RRGGBB` hex
+  colour in Settings — the family's darker/lighter shades (hover, pressed,
+  selection tints) are derived from it automatically
 - **Shortcut links**: on first boot the OS writes a `.lnk` file per installed
   program into `/desktop`, and the desktop shows them as icons — see
   [Desktop shortcuts](#desktop-shortcuts)
@@ -170,7 +174,7 @@ exactly like re-running the installer.
 | **Console** | A real CraftOS shell in a window. The shell runs in its own coroutine against a custom terminal object; only the focused console receives events, and the global `term` redirect follows focus |
 | **Notepad** | Text editor with cursor movement, Home/End, Tab, Ctrl shortcuts, save dialogs |
 | **Paint** | Pencil, Line, Box, Fill, Erase, Pick (P/L/B/F/E/I); 48-colour palette; single-level undo; load/save images |
-| **Settings** | Theme, wallpaper (**Image** — pick any `.nfp` or `.cwp` saved on the computer; the built-in images are in `/ccwin/images` — or **Solid** with a selectable colour), clock format; persisted to `/ccwin/settings.cfg` |
+| **Settings** | Theme plus an **Accent** hex colour (the blue of window bars, buttons, Start menu and taskbar highlights), wallpaper (**Image** — pick any `.nfp` or `.cwp` saved on the computer; the built-in images are in `/ccwin/images` — or **Solid** in any `#RRGGBB` hex colour), clock format; persisted to `/ccwin/settings.cfg` |
 | **System** | Computer ID, label, OS version, free/total disk space, peripheral list, plus the **OS updater**: *Check for updates* compares `/ccwin/version` with GitHub and *Install update* replaces the system files that changed |
 | **Browser** | Small HTML browser: `http.request` fetches (the answer arrives via `feed`), headings, lists, tables, quotes, code and buttons lay out like a real page, only the visible lines are drawn, back/forward history, and `file://` opens folders and text files |
 

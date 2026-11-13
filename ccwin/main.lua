@@ -30,6 +30,8 @@ local DEFAULTS = {
     theme = "light",
     wallpaper = "picture",
     wallpaperPath = "/ccwin/images/landscape.cwp",
+    wallpaperColour = "#3A6EA5",
+    accentColour = "#0078D4",
     clockSeconds = false,
     lastPath = "/",
     iconSize = "medium",
@@ -109,7 +111,7 @@ local state = {
 }
 
 local function applySettings()
-    theme.install(settings.theme)
+    theme.install(settings.theme, settings.accentColour, settings.wallpaperColour)
     desktop.rebuild()
     state.onSettingsChanged = nil
     wm.dirty = true
@@ -162,7 +164,14 @@ local function boot()
     gfx.init()
 
     -- The palette must be installed while graphics mode 2 is active.
-    theme.install(settings.theme)
+    -- Older builds stored the solid colour as a palette index; the
+    -- Settings app speaks hex now, so carry the same colour over before
+    -- the palette is built from it.
+    if type(settings.wallpaperColour) == "number" then
+        settings.wallpaperColour = theme.hexOf(settings.wallpaperColour) or "#3A6EA5"
+        saveSettings()
+    end
+    theme.install(settings.theme, settings.accentColour, settings.wallpaperColour)
 
     widgets.attach(gfx, theme, icons)
     dialogs.attach(gfx, theme, widgets, icons)

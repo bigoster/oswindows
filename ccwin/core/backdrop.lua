@@ -265,7 +265,13 @@ end
 function backdrop.build(w, h, settings)
     local kind = settings.wallpaper or "landscape"
     if kind == "solid" then
-        return buildSolid(w, h, settings.wallpaperColour or C.wpBlue)
+        -- a "#RRGGBB" colour from Settings renders from its own palette
+        -- slot; a plain number is a legacy palette index and still works
+        local col = settings.wallpaperColour
+        if type(col) == "string" then
+            col = theme.fromHex(col) and C.wpCustom or nil
+        end
+        return buildSolid(w, h, col or C.wpBlue)
     end
 
     if kind == "picture" then

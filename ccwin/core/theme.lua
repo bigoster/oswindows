@@ -22,6 +22,7 @@ local C = {
     -- wallpaper: solid choices
     wpBlue = 38, wpTeal = 39, wpPurple = 40, wpNavy = 41,
     wpGray = 42, wpRed = 43, wpGreen = 44,
+    wpCustom = 84,  -- the hex colour typed into Settings
 
     -- wallpaper: landscape
     sky1 = 45, sky2 = 46, sky3 = 47, sky4 = 48,
@@ -105,8 +106,49 @@ local function hsv(h, s, v)
     return r, g, b
 end
 
+---------------------------------------------------------------------------
+-- hex colours
+--
+-- Settings stores colours as "#RRGGBB" strings; the palette works with
+-- packed numbers. fromHex/toHex convert between the two, hexOf reports
+-- the colour a palette index holds in the current theme.
+---------------------------------------------------------------------------
+
+function theme.fromHex(s)
+    if type(s) ~= "string" then return nil end
+    local digits = s:match("^#?(%x%x%x%x%x%x)$")
+    return digits and tonumber(digits, 16) or nil
+end
+
+function theme.toHex(n)
+    if type(n) ~= "number" then return nil end
+    return string.format("#%06X", math.floor(n) % 0x1000000)
+end
+
+function theme.hexOf(index)
+    local n = PAL_COMMON[index]
+    if not n then n = theme.mode == "dark" and PAL_DARK[index] or PAL_LIGHT[index] end
+    return n and theme.toHex(n) or nil
+end
+
+local function rgbOf(n)
+    return math.floor(n / 65536) % 256, math.floor(n / 256) % 256, n % 256
+end
+
+--- Blend `from` toward `to` by t: 0 keeps from, 1 gives to.
+local function mix(from, to, t)
+    local r1, g1, b1 = rgbOf(from)
+    local r2, g2, b2 = rgbOf(to)
+    local function step(a, b) return math.floor(a + (b - a) * t + 0.5) end
+    return step(r1, r2) * 65536 + step(g1, g2) * 256 + step(b1, b2)
+end
+
 --- Install the whole palette for the given theme ("light" or "dark").
-function theme.install(mode)
+--- accentHex and solidHex are the optional "#RRGGBB" settings: they
+--- replace the built-in blue accent family (window bars, buttons, Start,
+--- taskbar highlights - with the darker/lighter shades derived from the
+--- accent) and the palette slot the solid wallpaper renders from.
+function theme.install(mode, accentHex, solidHex)
     mode = (mode == "dark") and "dark" or "light"
     theme.mode = mode
     local custom = (mode == "dark") and PAL_DARK or PAL_LIGHT
@@ -136,6 +178,21 @@ function theme.install(mode)
         t.setPaletteColor(i, v, v, v)
         i = i + 1
     end
+
+    -- The user's accent replaces the built-in blue family; without a
+    -- valid setting the defaults installed above simply stay.
+    local accent = theme.fromHex(accentHex)
+    if accent then
+        t.setPaletteColor(C.accent, accent)
+        t.setPaletteColor(C.accentDark, mix(accent, 0x000000, 0.30))
+        t.setPaletteColor(C.accentLight, mix(accent, 0xFFFFFF, 0.35))
+        t.setPaletteColor(C.accentFaint,
+            mode == "dark" and mix(accent, 0x000000, 0.78)
+            or mix(accent, 0xFFFFFF, 0.86))
+    end
+    -- The solid wallpaper always renders from its own slot, so any hex
+    -- colour can be shown without touching the rest of the palette.
+    t.setPaletteColor(C.wpCustom, theme.fromHex(solidHex) or 0x3A6EA5)
 end
 
 --- The 48 palette indices of the paint tool's colour box.
