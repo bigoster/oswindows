@@ -232,21 +232,60 @@ local function buildPicture(w, h, rows, iw, ih)
     return out, h
 end
 
+---------------------------------------------------------------------------
+-- built-in wallpapers
+---------------------------------------------------------------------------
+
+-- The two wallpapers CC-Windows ships with live as real image files in
+-- the wallpaper folder: the Settings app's Image button offers them
+-- beside your own pictures, and a fresh install shows the landscape. The
+-- procedural renderers above only remain as the fallback for a machine
+-- that lost them.
+local IMAGES = "/ccwin/images"
+local BUILT_IN = {
+    landscape = IMAGES .. "/landscape.cwp",
+    gradient = IMAGES .. "/gradient.cwp",
+}
+
+backdrop.IMAGES = IMAGES
+backdrop.DEFAULT_IMAGE = BUILT_IN.landscape
+
+--- The stored image at `path`, stretched over the screen, or nil when the
+--- file is missing or malformed.
+local function stored(path, w, h)
+    if type(path) ~= "string" or path == "" then return nil end
+    local ok, rows, iw, ih = pcall(loadPicture, path)
+    if not ok or not rows or not iw or not ih or iw < 1 or ih < 1 then
+        return nil
+    end
+    return buildPicture(w, h, rows, iw, ih)
+end
+
 --- Build a wallpaper. Returns an array of `w`-character row strings.
 function backdrop.build(w, h, settings)
     local kind = settings.wallpaper or "landscape"
-    if kind == "gradient" then
-        return buildGradient(w, h)
-    elseif kind == "solid" then
+    if kind == "solid" then
         return buildSolid(w, h, settings.wallpaperColour or C.wpBlue)
-    elseif kind == "picture" then
-        local ok, rows, iw, ih = pcall(loadPicture, settings.wallpaperPath)
-        if ok and rows and iw and ih and iw >= 1 and ih >= 1 then
-            return buildPicture(w, h, rows, iw, ih)
+    end
+
+    if kind == "picture" then
+        local path = settings.wallpaperPath
+        if type(path) ~= "string" or path == "" then path = BUILT_IN.landscape end
+        local rows = stored(path, w, h)
+        -- a custom picture that went missing falls back to the shipped one
+        if not rows and path ~= BUILT_IN.landscape then
+            rows = stored(BUILT_IN.landscape, w, h)
         end
-        -- broken or missing file: never leave the desktop bare
+        if rows then return rows end
+        -- broken or missing everywhere: never leave the desktop bare
         return buildLandscape(w, h)
     end
+
+    -- The default and the two older setting names resolve to the stored
+    -- images, with the procedural art of the same kind as the last resort.
+    local rows = stored(BUILT_IN[kind] or BUILT_IN.landscape, w, h)
+    if rows then return rows end
+    if kind == "gradient" then return buildGradient(w, h) end
     return buildLandscape(w, h)
 end
 

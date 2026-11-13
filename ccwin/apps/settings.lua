@@ -9,9 +9,11 @@ app.defaultSize = { 236, 158 }
 local theme, widgets, C
 local state, save, dialogs
 
+-- Row 1 of the wallpaper section. Image opens the file chooser: the
+-- shipped wallpapers live in /ccwin/images next to your own pictures,
+-- and the mode only flips once a file is really picked.
 local WALLPAPERS = {
-    { id = "landscape", label = "Landscape" },
-    { id = "gradient", label = "Gradient" },
+    { id = "picture", label = "Image" },
     { id = "solid", label = "Solid" },
 }
 local SOLID_COLOURS = { 38, 39, 40, 41, 42, 43, 44, 16 }
@@ -35,6 +37,20 @@ function app.create(win, opts, ctx)
         if state.applySettings then state.applySettings() end
     end
     self.setState = setState
+
+    --- The installed version, read once: the footer must not disagree
+    --- with /ccwin/version after an update replaces it.
+    local version = (function()
+        local ok, v = pcall(function()
+            local f = fs.open("/ccwin/version", "r")
+            if not f then return nil end
+            local line = f.readLine and f.readLine()
+            if f.close then f.close() end
+            return line
+        end)
+        if ok and type(v) == "string" and v:match("^[%w%.%-_]+$") then return v end
+        return "1.0"
+    end)()
 
     --- File picker for the picture wallpaper: starts where the current
     --- picture lives (or the last browsed folder), accepts .nfp/.cwp files,
@@ -97,16 +113,10 @@ function app.create(win, opts, ctx)
         y = section(dc, y + 2, "Wallpaper")
         y = toggleButtons(dc, y, WALLPAPERS, s.wallpaper, "wall")
 
-        -- Row 2: the picture picker is always here. Solid mode tucks its
-        -- swatches in beside it (narrower than before so both fit), picture
-        -- mode shows the chosen file name instead.
-        local picW = dc:textWidth("Picture...") + 16
-        widgets.button(dc, 8, y, picW, 15, "Picture...",
-            { state = self.hover == "pic" and "hover" or nil })
-        self.rects["pic"] = { 8, y, picW, 15 }
-
-        local tx = 8 + picW + 6
+        -- Row 2: solid tucks its swatches in here; picture shows which
+        -- file is on screen. The Image button above opens the chooser.
         if s.wallpaper == "solid" then
+            local tx = 8
             for i, colour in ipairs(SOLID_COLOURS) do
                 dc:fill(tx, y, 14, 14, colour)
                 if s.wallpaperColour == colour then
@@ -121,14 +131,14 @@ function app.create(win, opts, ctx)
         elseif s.wallpaper == "picture" then
             local name = "no file chosen"
             if type(s.wallpaperPath) == "string" and s.wallpaperPath ~= "" then
-                name = fs.getName(s.wallpaperPath)
+                name = s.wallpaperPath
                 if not fs.exists(s.wallpaperPath) then name = name .. " (missing)" end
             end
-            local room = math.floor((dc.w - 8 - tx) / 6)
+            local room = math.floor((dc.w - 16) / 6)
             if #name > room and room > 3 then
                 name = name:sub(1, room - 2) .. ".."
             end
-            dc:text(tx, y + 3, name, C.textMuted)
+            dc:text(8, y + 3, name, C.textMuted)
         end
         y = y + 20
 
@@ -142,7 +152,7 @@ function app.create(win, opts, ctx)
         -- pixels the old two-line footer used to hold.
         local fy = h - 11
         dc:fill(8, fy, dc.w - 16, 1, C.bevelMid)
-        dc:text(8, fy + 1, "CC-Windows 1.0 \194\183 CC-Graphics mode 2", C.textMuted)
+        dc:text(8, fy + 1, "CC-Windows " .. version .. " \194\183 CC-Graphics mode 2", C.textMuted)
     end
 
     -------------------------------------------------------------------
@@ -165,7 +175,13 @@ function app.create(win, opts, ctx)
         if key:sub(1, 5) == "theme" then
             setState("theme", r[5])
         elseif key:sub(1, 4) == "wall" then
-            setState("wallpaper", r[5])
+            if r[5] == "picture" then
+                -- Image opens the chooser; the mode only flips once a
+                -- file is picked (the built-in images are in there too).
+                pickPicture()
+            else
+                setState("wallpaper", r[5])
+            end
         elseif key:sub(1, 3) == "col" then
             setState("wallpaperColour", r[5])
             if state.settings.wallpaper ~= "solid" then

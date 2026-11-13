@@ -200,6 +200,7 @@ function app.create(win, opts, ctx)
         rects = {},
         pending = nil,   -- { kind, url, ... } while a GitHub fetch runs
         tick = nil,      -- timer guarding the pending fetch
+        deadline = nil,  -- os.clock() at which a pending fetch gives up
         upd = {
             state = "idle",   -- idle | checking | ready | installing | done | uptodate | error
             msg = "Click to look for a new version of CC-Windows on GitHub.",
@@ -301,25 +302,31 @@ function app.create(win, opts, ctx)
         -----------------------------------------------------------------
         -- The CC:CE fabric link. Only shown where there is one: on a
         -- computer without CC:CE this section must not appear at all.
-        if fabric and fabric.present() then
-            rows = {}
-            rows[#rows + 1] = { "Link", "Up (CC:CE fabric)" }
-            local peers = fabric.peers()
-            rows[#rows + 1] = {
-                "Peers",
-                #peers > 0 and tostring(#peers) or "(none connected)",
-            }
-            for i = 1, math.min(4, #peers) do
-                rows[#rows + 1] = {
-                    nil,
-                    fabric.peerName(peers[i].id)
-                        .. "  -  id " .. tostring(peers[i].id),
+        -- The block runs guarded: refresh() re-evaluates it every second,
+        -- so a hiccup in the mod API may only cost this one section.
+        if fabric then
+            local okF, linkRows = pcall(function()
+                if not fabric.present() then return nil end
+                local r = {}
+                r[#r + 1] = { "Link", "Up (CC:CE fabric)" }
+                local peers = fabric.peers()
+                r[#r + 1] = {
+                    "Peers",
+                    #peers > 0 and tostring(#peers) or "(none connected)",
                 }
-            end
-            if #peers > 4 then
-                rows[#rows + 1] = { nil, "and " .. (#peers - 4) .. " more" }
-            end
-            addSection(list, "Fabric", rows)
+                for i = 1, math.min(4, #peers) do
+                    r[#r + 1] = {
+                        nil,
+                        fabric.peerName(peers[i].id)
+                            .. "  -  id " .. tostring(peers[i].id),
+                    }
+                end
+                if #peers > 4 then
+                    r[#r + 1] = { nil, "and " .. (#peers - 4) .. " more" }
+                end
+                return r
+            end)
+            if okF and linkRows then addSection(list, "Fabric", linkRows) end
         end
 
         -----------------------------------------------------------------
@@ -342,7 +349,20 @@ function app.create(win, opts, ctx)
         self.sections = list
         self.dirty = true
     end
-    self.refresh = refresh
+
+    --- refresh() with a crash guard: it runs once at boot and then every
+    --- second, so a surprise in any optional API must leave the last good
+    --- sections - or, on the very first call, at least the Updates band
+    --- that keeps the updater reachable - instead of taking the window
+    --- down with it.
+    local function safeRefresh()
+        local ok = pcall(refresh)
+        if not ok and #self.sections == 0 then
+            self.sections = { { title = "Updates", updates = true, rows = {} } }
+        end
+        self.dirty = true
+    end
+    self.refresh = safeRefresh
 
     -------------------------------------------------------------------
     -- OS updater
@@ -354,6 +374,7 @@ function app.create(win, opts, ctx)
         self.upd.state = "error"
         self.upd.msg = msg
         self.pending = nil
+        self.deadline = nil
         markDirty()
     end
 
@@ -378,16 +399,24 @@ function app.create(win, opts, ctx)
         pending.kind = kind
         pending.url = url
         self.pending = pending
-        local ok, err = pcall(http.request, {
+        local ok, ret, err = pcall(http.request, {
             url = url,
             headers = { ["User-Agent"] = "CC-Windows-Updater/1.0" },
         })
         if not ok then
             self.pending = nil
-            return failUpd("Cannot reach GitHub: " .. tostring(err))
+            return failUpd("Cannot reach GitHub: " .. tostring(ret))
+        end
+        if ret ~= true then
+            -- A refusal that raises no event of its own (blocked or
+            -- malformed URL) must fail right here rather than sit until
+            -- the timers notice it.
+            self.pending = nil
+            return failUpd("Cannot reach GitHub: " .. tostring(err or ret))
         end
         if self.tick then pcall(os.cancelTimer, self.tick) end
         self.tick = os.startTimer(HTTP_TIMEOUT)
+        self.deadline = os.clock() + HTTP_TIMEOUT
         markDirty()
     end
 
@@ -506,12 +535,27 @@ function app.create(win, opts, ctx)
         fetch(MANIFEST_URL, "manifest")
     end
 
+    --- Abort a check or an install in flight. Files already written stay
+    --- as they are: /ccwin/version is only ever recorded by
+    --- finishInstall, so the next check simply offers the update again.
+    local function cancelUpd()
+        if self.tick then pcall(os.cancelTimer, self.tick); self.tick = nil end
+        self.pending = nil
+        self.deadline = nil
+        self.upd.state = "idle"
+        self.upd.msg = "Update cancelled."
+        self.upd.files = nil
+        self.upd.idx = 0
+        markDirty()
+    end
+
+    --- The button doubles as Cancel while a request runs: a stuck check
+    --- or install always has a way out.
     local function updButton()
         local st = self.upd.state
-        if st == "checking" then return "Checking...", true end
-        if st == "installing" then return "Installing...", true end
-        if st == "ready" then return "Install update", false end
-        return "Check for updates", false
+        if st == "checking" or st == "installing" then return "Cancel" end
+        if st == "ready" then return "Install update" end
+        return "Check for updates"
     end
 
     local function msgColour()
@@ -539,13 +583,12 @@ function app.create(win, opts, ctx)
             y = y + BAND_H + 2
 
             if section.updates then
-                -- Check / Install button plus a two-line status under it.
-                local label, disabled = updButton()
+                -- Check / Install / Cancel button plus a status under it.
+                local label = updButton()
                 local bw = dc:textWidth(label) + 18
                 local bx, by = PAD + 2, y + 2
                 widgets.button(dc, bx, by, bw, 15, label, {
-                    state = disabled and "disabled"
-                        or (self.hover == "upd" and "hover" or nil),
+                    state = self.hover == "upd" and "hover" or nil,
                 })
                 self.rects.upd = { bx, by, bw, 15 }
                 local maxChars = math.max(8, math.floor((w - PAD * 2 - 4) / 6))
@@ -626,9 +669,11 @@ function app.create(win, opts, ctx)
     function self:click(x, y, button)
         if button == 1 and hitUpd(x, y) then
             local st = self.upd.state
-            if st == "ready" then
+            if st == "checking" or st == "installing" then
+                cancelUpd()
+            elseif st == "ready" then
                 startInstall()
-            elseif st ~= "checking" and st ~= "installing" then
+            else
                 startCheck()
             end
             self.dirty = true
@@ -654,6 +699,7 @@ function app.create(win, opts, ctx)
         local p = self.pending
         if not p or ev[2] ~= p.url then return end
         self.pending = nil
+        self.deadline = nil
         if self.tick then pcall(os.cancelTimer, self.tick); self.tick = nil end
 
         local handle = (name == "http_success") and ev[3] or ev[4]
@@ -683,12 +729,21 @@ function app.create(win, opts, ctx)
                 .. ": HTTP " .. tostring(code))
         end
 
+        -- The handlers below only read the download, but a surprise in
+        -- one of them must land in the status line, not unwind the window.
+        local okH, err
         if p.kind == "check" then
-            onCheck(body)
+            okH, err = pcall(onCheck, body)
         elseif p.kind == "manifest" then
-            onManifest(body)
+            okH, err = pcall(onManifest, body)
         elseif p.kind == "file" then
-            onFile(p, body)
+            okH, err = pcall(onFile, p, body)
+        else
+            return failUpd("Internal error: unexpected request " .. tostring(p.kind))
+        end
+        if not okH then
+            return failUpd(("Update failed while reading %s: %s")
+                :format(shortUrl(p.url), tostring(err)))
         end
         self.dirty = true
     end
@@ -711,6 +766,7 @@ function app.create(win, opts, ctx)
             if self.pending then
                 local p = self.pending
                 self.pending = nil
+                self.deadline = nil
                 failUpd(("Timed out after %d seconds: %s")
                     :format(HTTP_TIMEOUT, shortUrl(p.url)))
             end
@@ -718,7 +774,17 @@ function app.create(win, opts, ctx)
         end
         if id == self.timerId then
             self.timerId = os.startTimer(1)
-            refresh()
+            -- Second line of defence: should the guard timer above ever be
+            -- lost, the wall-clock deadline still ends a stuck fetch.
+            if self.pending and self.deadline and os.clock() > self.deadline then
+                local p = self.pending
+                self.pending = nil
+                self.deadline = nil
+                if self.tick then pcall(os.cancelTimer, self.tick); self.tick = nil end
+                failUpd(("Timed out after %d seconds: %s")
+                    :format(HTTP_TIMEOUT, shortUrl(p.url)))
+            end
+            safeRefresh()
         end
     end
 
@@ -730,7 +796,7 @@ function app.create(win, opts, ctx)
     -- boot
     -------------------------------------------------------------------
 
-    refresh()
+    safeRefresh()
     self.timerId = os.startTimer(1)
 
     local close = self.close

@@ -28,7 +28,8 @@ end
 
 local DEFAULTS = {
     theme = "light",
-    wallpaper = "landscape",
+    wallpaper = "picture",
+    wallpaperPath = "/ccwin/images/landscape.cwp",
     clockSeconds = false,
     lastPath = "/",
     iconSize = "medium",
@@ -50,6 +51,16 @@ do
     end
     for k, v in pairs(DEFAULTS) do
         if t[k] == nil then t[k] = v end
+    end
+    -- Older builds kept the two built-in wallpapers as setting names;
+    -- both are image files now, so the choice carries over as the file
+    -- showing the very same picture.
+    if t.wallpaper == "landscape" then
+        t.wallpaper = "picture"
+        t.wallpaperPath = "/ccwin/images/landscape.cwp"
+    elseif t.wallpaper == "gradient" then
+        t.wallpaper = "picture"
+        t.wallpaperPath = "/ccwin/images/gradient.cwp"
     end
     settings = t
 end

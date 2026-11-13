@@ -816,11 +816,18 @@ Settings keys (see `ccwin/main.lua` `DEFAULTS`):
 
 ```lua
 state.settings.theme        -- "light" | "dark"
-state.settings.wallpaper    -- "landscape" | "gradient" | "solid" | "picture"
-state.settings.wallpaperPath-- file the "picture" wallpaper shows (.nfp / .cwp)
+state.settings.wallpaper    -- "picture" (default) | "solid"
+state.settings.wallpaperPath-- image file the "picture" wallpaper shows
+                             -- (.nfp / .cwp; default /ccwin/images/landscape.cwp)
 state.settings.clockSeconds -- show seconds in the taskbar clock
 state.settings.lastPath     -- last folder used by file dialogs
 ```
+
+The shipped wallpapers are ordinary image files in `/ccwin/images`, so any
+file there can be the background. Older configs that still say
+`"landscape"` or `"gradient"` keep working: `main.lua` migrates them to
+`"picture"` plus the matching file, and `backdrop.build` renders those
+legacy names either way.
 
 Mutate and then call `state.save()` — nothing is written automatically except
 on shutdown. Call `state.applySettings()` after changing `theme` or

@@ -62,6 +62,10 @@ local FILES = {
     { "ccwin/apps/browser.lua",  "/ccwin/apps/browser.lua" },
 
     { "ccwin/programs/fabric_agent.lua", "/ccwin/programs/fabric_agent.lua" },
+
+    -- the shipped wallpapers: plain image files in the wallpaper folder
+    { "ccwin/images/landscape.cwp", "/ccwin/images/landscape.cwp" },
+    { "ccwin/images/gradient.cwp",  "/ccwin/images/gradient.cwp"  },
 }
 
 local function die(msg)

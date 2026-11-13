@@ -84,6 +84,9 @@ the exit status.
     │   ├── settings.lua  (Settings)
     │   ├── system.lua    (System monitor)
     │   └── browser.lua   (Browser)
+    ├── images/
+    │   ├── landscape.cwp (the default background, a real image file)
+    │   └── gradient.cwp  (the other built-in wallpaper)
     └── programs/
         └── fabric_agent.lua  (standalone fabric peer for other computers)
 ```
@@ -97,7 +100,7 @@ The **System** app has an *Updates* band at the top with one button:
 
 - **Check for updates** fetches `ccwin/version` from the repository — a
   single small download — and compares it with `/ccwin/version` on the
-  computer. It reports either `Up to date - version 1.0 is installed.` or
+  computer. It reports either `Up to date - version 1.1 is installed.` or
   `Update available: <local> to <remote>`.
 - **Install update** then downloads `files.txt` (the file list), fetches
   every system file through it and replaces the ones whose bytes differ
@@ -107,10 +110,12 @@ The **System** app has an *Updates* band at the top with one button:
   `/ccwin/version` and asks for a `reboot`.
 
 Everything happens in the background (`http.request` plus `feed`), so the
-window stays alive while it works. If `http` is off, the repository is
-unreachable or a download comes back broken, the band says exactly what
-went wrong and **no file is touched** — the version marker is only written
-by a completed update, so a failed one simply gets offered again next time.
+window stays alive while it works. While a check or install is running the
+button reads **Cancel** — one click aborts it (files already written stay,
+and the version marker is only recorded by a completed update, so the
+update is simply offered again next time). If `http` is off, the repository
+is unreachable or a download comes back broken, the band says exactly what
+went wrong and **no file is touched**.
 
 **When you push changes to the repository:**
 
@@ -126,10 +131,13 @@ exactly like re-running the installer.
 
 **Desktop**
 
-- Pixel wallpaper (Landscape / Gradient / Solid, with selectable solid
-  colour, or **Picture**: any `.nfp` / `.cwp` image saved on the computer,
-  stretched to fill the screen — a broken or missing file falls back to the
-  landscape)
+- Pixel wallpaper (**Image** / **Solid**): *Image* opens a file chooser
+  starting in `/ccwin/images`, so you can show any `.nfp` / `.cwp` saved on
+  the computer — the shipped **landscape** (the default background) and
+  **gradient** sit there as plain image files beside your own pictures, and
+  the mode only flips once a file is really picked; *Solid* offers eight
+  selectable colours. A broken or missing picture falls back to the
+  landscape
 - **Shortcut links**: on first boot the OS writes a `.lnk` file per installed
   program into `/desktop`, and the desktop shows them as icons — see
   [Desktop shortcuts](#desktop-shortcuts)
@@ -162,7 +170,7 @@ exactly like re-running the installer.
 | **Console** | A real CraftOS shell in a window. The shell runs in its own coroutine against a custom terminal object; only the focused console receives events, and the global `term` redirect follows focus |
 | **Notepad** | Text editor with cursor movement, Home/End, Tab, Ctrl shortcuts, save dialogs |
 | **Paint** | Pencil, Line, Box, Fill, Erase, Pick (P/L/B/F/E/I); 48-colour palette; single-level undo; load/save images |
-| **Settings** | Theme, wallpaper (Landscape / Gradient / Solid / **Picture — pick any `.nfp` or `.cwp` file saved on the computer**), clock format; persisted to `/ccwin/settings.cfg` |
+| **Settings** | Theme, wallpaper (**Image** — pick any `.nfp` or `.cwp` saved on the computer; the built-in images are in `/ccwin/images` — or **Solid** with a selectable colour), clock format; persisted to `/ccwin/settings.cfg` |
 | **System** | Computer ID, label, OS version, free/total disk space, peripheral list, plus the **OS updater**: *Check for updates* compares `/ccwin/version` with GitHub and *Install update* replaces the system files that changed |
 | **Browser** | Small HTML browser: `http.request` fetches (the answer arrives via `feed`), headings, lists, tables, quotes, code and buttons lay out like a real page, only the visible lines are drawn, back/forward history, and `file://` opens folders and text files |
 
