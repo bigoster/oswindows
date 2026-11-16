@@ -91,6 +91,7 @@ local wm = dofile(path("core/wm.lua"))
 local desktop = dofile(path("core/desktop.lua"))
 local fabric = dofile(path("core/fabric.lua"))
 local programs = dofile(path("core/programs.lua"))
+local image = dofile(path("core/image.lua"))
 
 local APP_LIST = { "console", "explorer", "editor", "paint", "settings", "system", "browser" }
 local apps = {}
@@ -175,7 +176,7 @@ local function boot()
 
     widgets.attach(gfx, theme, icons)
     dialogs.attach(gfx, theme, widgets, icons)
-    backdrop.attach(gfx, theme)
+    backdrop.attach(gfx, theme, image)
     menu.attach {
         gfx = gfx,
         theme = theme,

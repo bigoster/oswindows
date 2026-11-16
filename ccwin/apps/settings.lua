@@ -107,8 +107,10 @@ function app.create(win, opts, ctx)
     end)()
 
     --- File picker for the picture wallpaper: starts where the current
-    --- picture lives (or the last browsed folder), accepts .nfp/.cwp files,
-    --- and only flips the wallpaper mode once a file is actually picked.
+    --- picture lives (or the last browsed folder), accepts the text
+    --- formats (.nfp / .cwp) and the decoded ones (.png / .jpg / .jpeg
+    --- / .webp), and only flips the wallpaper mode once a file is
+    --- actually picked.
     local function pickPicture()
         local s = state.settings
         local start = s.lastPath or "/"
@@ -123,7 +125,10 @@ function app.create(win, opts, ctx)
             path = start,
             filter = function(p)
                 if fs.isDir(p) then return true end
-                return p:match("%.nfp$") ~= nil or p:match("%.cwp$") ~= nil
+                local name = p:lower()
+                return name:match("%.nfp$") ~= nil or name:match("%.cwp$") ~= nil
+                    or name:match("%.png$") ~= nil or name:match("%.jpg$") ~= nil
+                    or name:match("%.jpeg$") ~= nil or name:match("%.webp$") ~= nil
             end,
             onPick = function(p)
                 s.wallpaperPath = p

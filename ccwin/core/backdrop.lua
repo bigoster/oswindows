@@ -4,10 +4,13 @@
 -- copies those rows into the framebuffer, which keeps redraws cheap.
 local backdrop = {}
 
-local gfx, theme, C
+local gfx, theme, C, image
 
-function backdrop.attach(g, t)
-    gfx, theme, C = g, t, t.C
+--- `img` is the optional image module (ccwin/core/image.lua).  Without
+--- it only the text picture formats load, so a host that never ships the
+--- decoder still gets every wallpaper it had before.
+function backdrop.attach(g, t, img)
+    gfx, theme, C, image = g, t, t.C, img
 end
 
 local char, rep, concat, byte = string.char, string.rep, table.concat, string.byte
@@ -151,21 +154,70 @@ local function buildSolid(w, h, colour)
 end
 
 ---------------------------------------------------------------------------
--- picture wallpapers (any .nfp / .cwp file on disk)
+-- picture wallpapers (.nfp / .cwp text files, PNG / JPEG / WebP images)
 ---------------------------------------------------------------------------
 
 local MAX_BYTES = 1048576 -- refuse to slurp in anything bigger
 local MAX_DIM = 4096       -- and anything claiming to be absurdly large
 
---- Load an NFP (one CC colour digit per pixel) or CWP (`CCWIN1 w h` header
---- plus two hex digits per pixel) picture. Returns `rows, w, h` - rows of
---- palette-index bytes - or nil when the file is missing, empty or malformed,
---- in which case the caller falls back to another wallpaper instead of
---- showing an error.
-local function loadPicture(path)
+--- The whole file at `path`, or nil when it cannot be read.  Only the
+--- decoded formats need the raw bytes; NFP and CWP keep streaming
+--- through readLine below.
+local function slurp(path)
+    local f = fs.open(path, "r")
+    if not f then return nil end
+    if not f.readAll then
+        pcall(f.close)
+        return nil
+    end
+    local ok, data = pcall(f.readAll)
+    pcall(f.close)
+    if not ok or type(data) ~= "string" then return nil end
+    return data
+end
+
+--- Publish a decoded photo's palette (slots PHOTO_FIRST..) so its index
+--- rows paint with their own colours.  Best effort only: outside
+--- graphics mode 2 there is no palette to write to, and a picture must
+--- never be able to take the desktop down.
+local function installPhoto(pal)
+    if type(pal) ~= "table" or type(pal.r) ~= "table" then return end
+    pcall(function()
+        local t = term
+        if t and t.native then t = t.native() end
+        if not t or type(t.setPaletteColor) ~= "function" then return end
+        for i = 1, #pal.r do
+            t.setPaletteColor(pal.first + i - 1,
+                pal.r[i] / 255, pal.g[i] / 255, pal.b[i] / 255)
+        end
+    end)
+end
+
+--- Load a picture. Returns `rows, w, h` - rows of palette-index bytes -
+--- or nil when the file is missing, empty or malformed, in which case
+--- the caller falls back to another wallpaper instead of showing an
+--- error.  A PNG / JPEG / WebP is decoded and quantized straight to the
+--- screen (`tw` x `th`); NFP (one CC colour digit per pixel) and CWP
+--- (`CCWIN1 w h` header plus two hex digits per pixel) keep their own
+--- size and are stretched by the caller.
+local function loadPicture(path, tw, th)
     if type(path) ~= "string" or path == "" then return nil end
     local okSize, size = pcall(fs.getSize, path)
     if not okSize or type(size) ~= "number" or size > MAX_BYTES then return nil end
+
+    -- The decoded formats are binary: sniff the bytes and hand them to
+    -- the image module.  Anything it rejects (truncated, unsupported,
+    -- too large, out of memory) behaves exactly like a missing file.
+    if image then
+        local data = slurp(path)
+        if data and image.sniff(data) then
+            local okDec, rows, pal = pcall(image.decode, data, tw, th)
+            if not okDec or type(rows) ~= "table" then return nil end
+            installPhoto(pal)
+            return rows, tw, th
+        end
+    end
+
     local f = fs.open(path, "r")
     if not f or not f.readLine then return nil end
 
@@ -254,7 +306,7 @@ backdrop.DEFAULT_IMAGE = BUILT_IN.landscape
 --- file is missing or malformed.
 local function stored(path, w, h)
     if type(path) ~= "string" or path == "" then return nil end
-    local ok, rows, iw, ih = pcall(loadPicture, path)
+    local ok, rows, iw, ih = pcall(loadPicture, path, w, h)
     if not ok or not rows or not iw or not ih or iw < 1 or ih < 1 then
         return nil
     end

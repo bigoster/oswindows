@@ -74,6 +74,7 @@ the exit status.
     │   ├── wm.lua        (window list, z-order, focus, drag/resize)
     │   ├── desktop.lua   (shortcuts, wallpaper, taskbar, start menu, clock)
     │   ├── backdrop.lua  (wallpaper renderers, picture loading)
+    │   ├── image.lua     (pure-Lua PNG / JPEG / WebP decoders)
     │   ├── fabric.lua    (CC:CE fabric link — "Run on", incoming programs)
     │   └── programs.lua  (recognising and opening CC-Windows programs)
     ├── apps/
@@ -132,8 +133,10 @@ exactly like re-running the installer.
 **Desktop**
 
 - Pixel wallpaper (**Image** / **Solid**): *Image* opens a file chooser
-  starting in `/ccwin/images`, so you can show any `.nfp` / `.cwp` saved on
-  the computer — the shipped **landscape** (the default background) and
+  starting in `/ccwin/images`, so you can show any `.nfp` / `.cwp` text
+  picture **or** any `.png` / `.jpg` / `.jpeg` / `.webp` image saved on
+  the computer — the photos are decoded in pure Lua and downsampled to
+  the screen — the shipped **landscape** (the default background) and
   **gradient** sit there as plain image files beside your own pictures, and
   the mode only flips once a file is really picked; *Solid* fills the
   screen with any `#RRGGBB` hex colour typed into Settings. A broken or
@@ -174,7 +177,7 @@ exactly like re-running the installer.
 | **Console** | A real CraftOS shell in a window. The shell runs in its own coroutine against a custom terminal object; only the focused console receives events, and the global `term` redirect follows focus |
 | **Notepad** | Text editor with cursor movement, Home/End, Tab, Ctrl shortcuts, save dialogs |
 | **Paint** | Pencil, Line, Box, Fill, Erase, Pick (P/L/B/F/E/I); 48-colour palette; single-level undo; load/save images |
-| **Settings** | Theme plus an **Accent** hex colour (the blue of window bars, buttons, Start menu and taskbar highlights), wallpaper (**Image** — pick any `.nfp` or `.cwp` saved on the computer; the built-in images are in `/ccwin/images` — or **Solid** in any `#RRGGBB` hex colour), clock format; persisted to `/ccwin/settings.cfg` |
+| **Settings** | Theme plus an **Accent** hex colour (the blue of window bars, buttons, Start menu and taskbar highlights), wallpaper (**Image** — pick any `.nfp` or `.cwp` text picture, or any `.png` / `.jpg` / `.jpeg` / `.webp` image, saved on the computer; the built-in images are in `/ccwin/images` — or **Solid** in any `#RRGGBB` hex colour), clock format; persisted to `/ccwin/settings.cfg` |
 | **System** | Computer ID, label, OS version, free/total disk space, peripheral list, plus the **OS updater**: *Check for updates* compares `/ccwin/version` with GitHub and *Install update* replaces the system files that changed |
 | **Browser** | Small HTML browser: `http.request` fetches (the answer arrives via `feed`), headings, lists, tables, quotes, code and buttons lay out like a real page, only the visible lines are drawn, back/forward history, and `file://` opens folders and text files |
 

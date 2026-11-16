@@ -818,7 +818,8 @@ Settings keys (see `ccwin/main.lua` `DEFAULTS`):
 state.settings.theme        -- "light" | "dark"
 state.settings.wallpaper    -- "picture" (default) | "solid"
 state.settings.wallpaperPath-- image file the "picture" wallpaper shows
-                             -- (.nfp / .cwp; default /ccwin/images/landscape.cwp)
+                             -- (.nfp / .cwp / .png / .jpg / .jpeg / .webp;
+                             -- default /ccwin/images/landscape.cwp)
 state.settings.wallpaperColour -- "#RRGGBB" the "solid" wallpaper fills with
 state.settings.accentColour -- "#RRGGBB" of the accent family (window bars,
                              -- buttons, Start menu, taskbar highlights)
@@ -832,7 +833,10 @@ wallpaper renders from its own palette slot, so any hex value works. An
 invalid or missing value falls back to the built-in blue.
 
 The shipped wallpapers are ordinary image files in `/ccwin/images`, so any
-file there can be the background. Older configs that still say
+file there can be the background: NFP and CWP are read line by line, and
+PNG / JPEG / WebP files are decoded by `ccwin/core/image.lua` (pure Lua,
+no libraries) straight to the screen size with a quantized palette.
+Older configs that still say
 `"landscape"` or `"gradient"` keep working: `main.lua` migrates them to
 `"picture"` plus the matching file, and `backdrop.build` renders those
 legacy names either way. A `wallpaperColour` stored as a palette index by
