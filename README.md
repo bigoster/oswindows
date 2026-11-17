@@ -74,7 +74,9 @@ the exit status.
     │   ├── wm.lua        (window list, z-order, focus, drag/resize)
     │   ├── desktop.lua   (shortcuts, wallpaper, taskbar, start menu, clock)
     │   ├── backdrop.lua  (wallpaper renderers, picture loading)
-    │   ├── image.lua     (pure-Lua PNG / JPEG / WebP decoders)
+    │   ├── picture.lua   (NFP / CWP1 / CWP2 picture codec)
+    │   ├── storage.lua   (atomic writes, size caps, error log)
+    │   ├── image.lua     (pure-Lua PNG / JPEG / WebP decoders, loaded on demand)
     │   ├── fabric.lua    (CC:CE fabric link — "Run on", incoming programs)
     │   └── programs.lua  (recognising and opening CC-Windows programs)
     ├── apps/
@@ -133,14 +135,17 @@ exactly like re-running the installer.
 **Desktop**
 
 - Pixel wallpaper (**Image** / **Solid**): *Image* opens a file chooser
-  starting in `/ccwin/images`, so you can show any `.nfp` / `.cwp` text
-  picture **or** any `.png` / `.jpg` / `.jpeg` / `.webp` image saved on
+  starting in `/ccwin/images`, so you can show any `.nfp` / `.cwp` picture
+  **or** any `.png` / `.jpg` / `.jpeg` / `.webp` image saved on
   the computer — the photos are decoded in pure Lua and downsampled to
   the screen — the shipped **landscape** (the default background) and
   **gradient** sit there as plain image files beside your own pictures, and
   the mode only flips once a file is really picked; *Solid* fills the
   screen with any `#RRGGBB` hex colour typed into Settings. A broken or
-  missing picture falls back to the landscape
+  missing picture falls back to the landscape. **CWP2** stores a full
+  306×171 wallpaper in about 8 KB with run-length compression (the
+  shipped landscape is 7.6 KB instead of 102 KB), and Paint saves new
+  pictures in that format; older CWP1 and NFP files still load
 - **Accent colour**: the standard blue behind window bars, buttons, the
   Start menu and taskbar highlights can be changed to any `#RRGGBB` hex
   colour in Settings — the family's darker/lighter shades (hover, pressed,
@@ -168,6 +173,31 @@ exactly like re-running the installer.
   right-click the title bar for the window menu
 - Focus follows click, z-order raise, cascading placement
 - Crashed apps are caught and shown as a crashed window instead of killing the OS
+- Drag and move redraws are coalesced to one frame per 0.03 s, so a fast
+  mouse cannot queue up a redraw storm; clicks, keys and releases still
+  render immediately
+
+**Reliability**
+
+- **Atomic saves**: Notepad, Paint, settings and received programs write
+  through `core/storage.lua` — bytes go to a `.new` sibling, are read back
+  to prove they all arrived, then replace the real file and keep a `.bak`
+  copy. A power cut leaves either the old file or the new one, never half
+  of each
+- **Safe boot**: a boot marker is written before the desktop starts and
+  removed after its first frame. If the previous start was interrupted,
+  the next one uses known-good defaults in memory (the user's
+  `settings.cfg` is untouched) and shows a short recovery notice
+- **Fault isolation**: every event, redraw, theme install and module boot
+  step is guarded; a fault is logged to `/ccwin/last-error.log` (capped at
+  32 KB) and the desktop keeps running
+- **Validated settings**: `/ccwin/settings.cfg` is capped at 64 KB,
+  unserialised safely, migrated from older wallpaper names/palette
+  indices, and each key is checked against its schema; bad values are
+  repaired in memory with a warning instead of crashing the boot
+- **Small install**: CWP2 pictures, runtime picture caches and an
+  on-demand PNG/JPEG/WebP decoder keep the whole `ccwin` tree at about
+  550 KB, with no change to the app contract
 
 **Apps**
 
@@ -177,7 +207,7 @@ exactly like re-running the installer.
 | **Console** | A real CraftOS shell in a window. The shell runs in its own coroutine against a custom terminal object; only the focused console receives events, and the global `term` redirect follows focus |
 | **Notepad** | Text editor with cursor movement, Home/End, Tab, Ctrl shortcuts, save dialogs |
 | **Paint** | Pencil, Line, Box, Fill, Erase, Pick (P/L/B/F/E/I); 48-colour palette; single-level undo; load/save images |
-| **Settings** | Theme plus an **Accent** hex colour (the blue of window bars, buttons, Start menu and taskbar highlights), wallpaper (**Image** — pick any `.nfp` or `.cwp` text picture, or any `.png` / `.jpg` / `.jpeg` / `.webp` image, saved on the computer; the built-in images are in `/ccwin/images` — or **Solid** in any `#RRGGBB` hex colour), clock format; persisted to `/ccwin/settings.cfg` |
+| **Settings** | Theme plus an **Accent** hex colour (the blue of window bars, buttons, Start menu and taskbar highlights), wallpaper (**Image** — pick any `.nfp` or `.cwp` picture (CWP1 or CWP2), or any `.png` / `.jpg` / `.jpeg` / `.webp` image, saved on the computer; the built-in images are in `/ccwin/images` — or **Solid** in any `#RRGGBB` hex colour), clock format; persisted atomically to `/ccwin/settings.cfg` |
 | **System** | Computer ID, label, OS version, free/total disk space, peripheral list, plus the **OS updater**: *Check for updates* compares `/ccwin/version` with GitHub and *Install update* replaces the system files that changed |
 | **Browser** | Small HTML browser: `http.request` fetches (the answer arrives via `feed`), headings, lists, tables, quotes, code and buttons lay out like a real page, only the visible lines are drawn, back/forward history, and `file://` opens folders and text files |
 
@@ -211,8 +241,8 @@ list.
 - **Open.** Double-clicking a link opens its target: folders go to Files,
   `.lua` files are opened the OS way — a program written for CC-Windows gets
   its own window, anything else runs in a Console (that window runs the
-  program first, then drops to a shell), `.nfp`/`.png` go to Paint,
-  everything else to Notepad. A link whose
+  program first, then drops to a shell), `.nfp`/`.cwp`/`.png`/`.jpg`/`.jpeg`/
+  `.webp` go to Paint, everything else to Notepad. A link whose
   program no longer exists is deleted when you open it.
 - **Arrange / remove.** Drag an icon to move it; right-click → Rename / Delete
   (with a confirmation) / Properties, or select and press `F2` / `Delete`.

@@ -29,6 +29,7 @@
 local programs = {}
 
 local wm
+local picture  -- core/picture.lua, for the binary CWP2 icon files
 
 local function noop() end
 
@@ -90,6 +91,7 @@ end
 
 function programs.attach(d)
     wm = d and d.wm or nil
+    picture = d and d.picture or nil
 end
 
 local function firstLine(path)
@@ -204,9 +206,9 @@ end
 -- picture icons
 --
 -- A program may ship the picture its desktop link shows - inside itself, as
--- a run of comment lines, or beside it, as <name>.nfp / <name>.cwp (the two
--- formats Paint writes). Resolving an icon only ever reads text, so looking
--- at a program to find its picture never runs it.
+-- a run of comment lines, or beside it, as <name>.nfp / <name>.cwp (the
+-- formats Paint writes, CWP2 included). Resolving an icon only ever reads
+-- the file, so looking at a program to find its picture never runs it.
 --
 --     --- icon:
 --     --- 000f000
@@ -234,17 +236,48 @@ function programs.iconRows(rows)
     return rows
 end
 
---- A picture file (NFP: one hex digit per pixel; CWP: Paint's "CCWIN1"
--- header plus two hex digits per pixel). Returns its rows or nil.
+--- A picture file (NFP: one hex digit per pixel; CWP1 / CWP2: Paint's
+--- formats, text and run-length respectively). Returns its rows or nil.
 local function pictureFile(path)
     local f = fs.open(path, "r")
     if not f then return nil end
-    local rows = {}
     local first = f.readLine()
     if not first then
         f.close()
         return nil
     end
+
+    -- CWP2 is binary, so it goes through the codec instead of readLine.
+    -- The header is checked before decoding: a wallpaper-sized picture is
+    -- not an icon and must not be decoded into memory at all.
+    if first:match("^CCWIN2") then
+        f.close()
+        local w, h = first:match("^CCWIN2%s+(%d+)%s+(%d+)")
+        w, h = tonumber(w), tonumber(h)
+        if not picture or not w or not h or w < 1 or h < 1
+            or w > MAX_ICON or h > MAX_ICON then
+            return nil
+        end
+        local data = picture.readFile(path, 65536)
+        if not data then return nil end
+        local ok, rows = pcall(picture.decode, data)
+        if not ok or type(rows) ~= "table" then return nil end
+        local out = {}
+        for y = 1, h do
+            local row = rows[y]
+            if type(row) ~= "string" then return nil end
+            local line = {}
+            for x = 1, w do
+                local v = row:byte(x) or 15
+                if v > 15 then v = 15 end
+                line[x] = string.format("%x", v)
+            end
+            out[y] = table.concat(line)
+        end
+        return programs.iconRows(out)
+    end
+
+    local rows = {}
     if first:match("^CCWIN1") then
         local w = tonumber(first:match("^CCWIN1%s+(%d+)"))
         local h = tonumber(first:match("^CCWIN1%s+%d+%s+(%d+)"))

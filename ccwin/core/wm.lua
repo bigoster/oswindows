@@ -6,6 +6,7 @@ local wm = {}
 
 local gfx, theme, widgets, dialogs, icons, menu, C
 local apps, state, desktop, fabric, programs
+local storage, picture, image
 local rootDC
 
 local windows = {}
@@ -33,6 +34,7 @@ function wm.attach(d)
     apps, state = d.apps, d.state
     fabric = d.fabric
     programs = d.programs
+    storage, picture, image = d.storage, d.picture, d.image
     rootDC = gfx.newDC(0, 0, gfx.size())
 end
 
@@ -288,6 +290,10 @@ function wm.context()
             -- "Run on" and "Open", and the System app's Fabric section.
             fabric = fabric,
             programs = programs,
+            -- Safe IO and the picture codec, shared with Paint and Notepad.
+            storage = storage,
+            picture = picture,
+            image = image,
             launch = function(appId, opts) return wm.create(appId, opts) end,
             -- The context is built before setDesktop runs, so this closure
             -- reads the upvalue lazily. Explorer uses it for "Create link".

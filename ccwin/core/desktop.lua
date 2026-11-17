@@ -202,7 +202,10 @@ local function iconFor(path)
     if fs.isDir(path) then return "folder" end
     local ext = (path:match("%.([%w]+)$") or ""):lower()
     if ext == "lua" then return "terminal" end
-    if ext == "nfp" or ext == "png" then return "paint" end
+    if ext == "nfp" or ext == "cwp" or ext == "png" or ext == "jpg"
+        or ext == "jpeg" or ext == "webp" then
+        return "paint"
+    end
     if ext == "txt" or ext == "md" or ext == "cfg" then return "editor" end
     return "file"
 end
@@ -409,7 +412,8 @@ local function openFile(path)
         else
             wm.create("console", { program = path })
         end
-    elseif ext == "nfp" or ext == "png" then
+    elseif ext == "nfp" or ext == "cwp" or ext == "png" or ext == "jpg"
+        or ext == "jpeg" or ext == "webp" then
         wm.create("paint", { path = path })
     else
         wm.create("editor", { path = path })
@@ -460,6 +464,18 @@ function desktop.dialogClick(x, y, button, double)
     dialogs.click(desktopDialog, x - c.x, y - c.y, button, double)
     mark()
     return true
+end
+
+--- A simple modal message owned by the desktop (safe-mode notice and
+--- similar boot-time information that has no window to call its own).
+function desktop.alert(title, message)
+    openDesktopDialog {
+        type = "confirm",
+        title = title,
+        message = message,
+        buttons = { "OK" },
+        onResult = function() end,
+    }
 end
 
 ---------------------------------------------------------------------------
@@ -609,15 +625,27 @@ end
 -- neighbour, aspect kept, centred) so a 16x16 drawing and a 48x32 one both
 -- land in the same slot the glyph icons use. The rows hold NFP digits,
 -- which are palette indices - the same bytes the frame buffer wants.
-local function drawPictureIcon(dc, pic, x, y, box)
+-- Scaling is cached per picture table and box size: the desktop redraws
+-- on every pointer move and must not rescale artwork each frame.
+local pictureCache = setmetatable({}, { __mode = "k" })
+
+local function scaledPicture(pic, box)
+    local byBox = pictureCache[pic]
+    if not byBox then
+        byBox = {}
+        pictureCache[pic] = byBox
+    end
+    local cached = byBox[box]
+    if cached then return cached end
     local h = #pic
-    local w = #pic[1]
-    if w < 1 or h < 1 then return false end
+    local first = pic[1]
+    if type(first) ~= "string" then return nil end
+    local w = #first
+    if w < 1 or h < 1 then return nil end
     local sc = math.min(box / w, box / h)
     local ow = math.max(1, math.floor(w * sc + 0.5))
     local oh = math.max(1, math.floor(h * sc + 0.5))
-    local px = x + math.floor((box - ow) / 2)
-    local py = y + math.floor((box - oh) / 2)
+    local rows = {}
     for row = 1, oh do
         local src = pic[math.floor((row - 1) * h / oh) + 1]
         local out = {}
@@ -625,7 +653,20 @@ local function drawPictureIcon(dc, pic, x, y, box)
             local sx = math.floor((col - 1) * w / ow) + 1
             out[col] = string.char(tonumber(src:sub(sx, sx), 16) or 15)
         end
-        dc:blit(px, py + row - 1, table.concat(out))
+        rows[row] = table.concat(out)
+    end
+    cached = { w = ow, h = oh, rows = rows }
+    byBox[box] = cached
+    return cached
+end
+
+local function drawPictureIcon(dc, pic, x, y, box)
+    local c = scaledPicture(pic, box)
+    if not c then return false end
+    local px = x + math.floor((box - c.w) / 2)
+    local py = y + math.floor((box - c.h) / 2)
+    for row = 1, c.h do
+        dc:blit(px, py + row - 1, c.rows[row])
     end
     return true
 end

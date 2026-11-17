@@ -20,6 +20,14 @@ local abs, max, min = math.abs, math.max, math.min
 local rep, sub, byte, char = string.rep, string.sub, string.byte, string.char
 local concat = table.concat
 
+-- Per-code-point, per-row horizontal runs of lit pixels.  Recomputing
+-- these bit tests for every character of every label was the hottest loop
+-- in the shell; the runs only change when a glyph is registered.
+local runCache = {}
+-- A small textWidth memo: labels are measured on every frame and rarely
+-- change.
+local widthCache, widthCount = {}, 0
+
 -- Fallback bitmap for code points we have no glyph for (a 6x9 open box).
 local BOX = char(63, 33, 33, 33, 33, 33, 33, 33, 63)
 
@@ -49,11 +57,40 @@ local function glyphFor(cp)
     return extras[cp] or font.glyphs[cp] or BOX
 end
 
+local function glyphRuns(cp)
+    local cached = runCache[cp]
+    if cached then return cached end
+    local g = glyphFor(cp)
+    local gw, gh = font.width, font.height
+    local out = {}
+    for r = 0, gh - 1 do
+        local bits = byte(g, r + 1)
+        local row = {}
+        local x = 0
+        while x < gw do
+            if floor(bits / 2 ^ x) % 2 == 1 then
+                local start = x
+                repeat x = x + 1 until x >= gw or floor(bits / 2 ^ x) % 2 ~= 1
+                row[#row + 1] = start
+                row[#row + 1] = x - start
+            else
+                x = x + 1
+            end
+        end
+        out[r + 1] = row
+    end
+    runCache[cp] = out
+    return out
+end
+
 ---------------------------------------------------------------------------
 -- lifecycle
 ---------------------------------------------------------------------------
 
-function gfx.attach(f) font = f end
+function gfx.attach(f)
+    font = f
+    runCache, widthCache, widthCount = {}, {}, 0
+end
 
 --- Enter 256-colour graphics mode and allocate the buffers.
 function gfx.init()
@@ -211,11 +248,18 @@ end
 function gfx.textWidth(str, scale)
     scale = scale or 1
     str = tostring(str or "")
-    local n, i, len = 0, 1, #str
-    while i <= len do
-        local _, clen = decodeUTF8(str, i, byte(str, i))
-        n = n + 1
-        i = i + clen
+    local n = widthCache[str]
+    if not n then
+        local i, len = 1, #str
+        n = 0
+        while i <= len do
+            local _, clen = decodeUTF8(str, i, byte(str, i))
+            n = n + 1
+            i = i + clen
+        end
+        if widthCount >= 512 then widthCache, widthCount = {}, 0 end
+        widthCache[str] = n
+        widthCount = widthCount + 1
     end
     return n * font.width * scale
 end
@@ -247,22 +291,27 @@ function gfx.text(x, y, str, fg, bg, scale)
     local fgCh = char(fg)
 
     if bg then
-        -- Build each scan line of the whole run, then splice it once.
+        -- Each scan line of the whole run is assembled from precomputed
+        -- glyph runs, then spliced in once.
         local bgCh = char(bg)
+        local fgSeg = scale == 1 and fgCh or rep(fgCh, scale)
+        local bgSeg = scale == 1 and bgCh or rep(bgCh, scale)
         for r = 0, gh - 1 do
             local ytop = y + r * scale
             if ytop + scale > ry0 and ytop < ry1 then
                 local parts = {}
                 for k = 1, nCodes do
-                    local g = glyphFor(codes[k])
-                    local bits = g and byte(g, r + 1) or 0
-                    local seg = {}
-                    for sx = 0, gw - 1 do
-                        local on = floor(bits / 2 ^ sx) % 2 == 1
-                        local ch = on and fgCh or bgCh
-                        seg[#seg + 1] = scale == 1 and ch or rep(ch, scale)
+                    local runs = glyphRuns(codes[k])[r + 1]
+                    local pos = 0
+                    for j = 1, #runs, 2 do
+                        local sx, len = runs[j], runs[j + 1]
+                        if sx > pos then
+                            parts[#parts + 1] = rep(bgSeg, sx - pos)
+                        end
+                        parts[#parts + 1] = rep(fgSeg, len)
+                        pos = sx + len
                     end
-                    parts[#parts + 1] = concat(seg)
+                    if pos < gw then parts[#parts + 1] = rep(bgSeg, gw - pos) end
                 end
                 local line = concat(parts)
                 for sy = 0, scale - 1 do
@@ -277,25 +326,13 @@ function gfx.text(x, y, str, fg, bg, scale)
     else
         local cx = x
         for k = 1, nCodes do
-            local g = glyphFor(codes[k])
-            if g and cx + adv > rx0 and cx < rx1 then
+            local runsByRow = glyphRuns(codes[k])
+            if cx + adv > rx0 and cx < rx1 then
                 for r = 0, gh - 1 do
-                    local bits = byte(g, r + 1)
-                    if bits ~= 0 then
-                        local ytop = y + r * scale
-                        local sx = 0
-                        while sx < gw do
-                            if floor(bits / 2 ^ sx) % 2 == 1 then
-                                local run = 1
-                                while sx + run < gw and floor(bits / 2 ^ (sx + run)) % 2 == 1 do
-                                    run = run + 1
-                                end
-                                gfx.fill(cx + sx * scale, ytop, run * scale, scale, fg)
-                                sx = sx + run
-                            else
-                                sx = sx + 1
-                            end
-                        end
+                    local runs = runsByRow[r + 1]
+                    local ytop = y + r * scale
+                    for j = 1, #runs, 2 do
+                        gfx.fill(cx + runs[j] * scale, ytop, runs[j + 1] * scale, scale, fg)
                     end
                 end
             end
@@ -306,7 +343,10 @@ function gfx.text(x, y, str, fg, bg, scale)
 end
 
 --- Register a glyph bitmap for a Unicode code point (9 bytes, same format as font.lua).
-function gfx.registerGlyph(cp, bitmap) extras[cp] = bitmap end
+function gfx.registerGlyph(cp, bitmap)
+    extras[cp] = bitmap
+    runCache[cp] = nil
+end
 
 ---------------------------------------------------------------------------
 -- presenting

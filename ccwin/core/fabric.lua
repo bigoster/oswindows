@@ -17,6 +17,7 @@
 local fabric = {}
 
 local wm          -- window manager, handed over by attach()
+local storage     -- core/storage.lua, for the received-program write
 local labels = {}  -- peer id -> the name that peer announced
 local greeted = {} -- peer id -> true once somebody has said hello
 local pending = {} -- our run nonce -> callback waiting for the answer
@@ -175,12 +176,22 @@ local function handleRun(p, sender)
         -- Only the source travelled: lay it down in /received and run it.
         target = fs.combine("/received", name)
         pcall(fs.makeDir, "/received")
-        local f = fs.open(target, "w")
-        if f then
-            f.write(p.source)
-            f.close()
+        local ok, why
+        if storage then
+            ok, why = storage.write(target, p.source, { backup = false })
         else
-            target, why = nil, "cannot write " .. target
+            local f = fs.open(target, "w")
+            if f then
+                local wrote, err = pcall(f.write, p.source)
+                local closed, closeErr = pcall(f.close)
+                ok = wrote and closed
+                why = err or closeErr
+            else
+                ok, why = false, "cannot open"
+            end
+        end
+        if not ok then
+            target, why = nil, "cannot write " .. target .. (why and (" (" .. tostring(why) .. ")") or "")
         end
     end
 
@@ -194,11 +205,19 @@ local function handleRun(p, sender)
 
     local started = false
     if wm then
-        started = pcall(wm.create, "console", { program = target })
+        local ok, created = pcall(wm.create, "console", { program = target })
+        started = ok and created ~= nil
+        if not started then
+            why = tostring(created or "cannot open a console")
+            if storage then
+                storage.append("/ccwin/last-error.log",
+                    "[fabric] " .. why:gsub("[\r\n]+", " ") .. "\n", storage.LOG_MAX)
+            end
+        end
     end
     fabric.send(sender, {
         op = "result", id = p.id, ok = started,
-        message = started and ("running " .. name) or "no console to run it in",
+        message = started and ("running " .. name) or (why or "no console to run it in"),
     })
 end
 
@@ -253,6 +272,7 @@ end
 
 function fabric.attach(d)
     wm = d and d.wm or nil
+    storage = d and d.storage or nil
 end
 
 return fabric

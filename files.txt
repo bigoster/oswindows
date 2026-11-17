@@ -24,7 +24,9 @@ ccwin/core/gfx.lua /ccwin/core/gfx.lua
 ccwin/core/icons.lua /ccwin/core/icons.lua
 ccwin/core/image.lua /ccwin/core/image.lua
 ccwin/core/menu.lua /ccwin/core/menu.lua
+ccwin/core/picture.lua /ccwin/core/picture.lua
 ccwin/core/programs.lua /ccwin/core/programs.lua
+ccwin/core/storage.lua /ccwin/core/storage.lua
 ccwin/core/theme.lua /ccwin/core/theme.lua
 ccwin/core/widgets.lua /ccwin/core/widgets.lua
 ccwin/core/wm.lua /ccwin/core/wm.lua

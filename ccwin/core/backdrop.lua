@@ -4,16 +4,24 @@
 -- copies those rows into the framebuffer, which keeps redraws cheap.
 local backdrop = {}
 
-local gfx, theme, C, image
+local gfx, theme, C, image, picture
 
---- `img` is the optional image module (ccwin/core/image.lua).  Without
---- it only the text picture formats load, so a host that never ships the
---- decoder still gets every wallpaper it had before.
-function backdrop.attach(g, t, img)
-    gfx, theme, C, image = g, t, t.C, img
+-- Wallpapers are pure functions of (mode, path, colour, size), so one
+-- decoded copy is kept per combination.  A theme or accent change no
+-- longer re-decodes a photograph, and switching back is instant.
+local cache, cacheOrder = {}, {}
+local CACHE_MAX = 6
+
+--- `img` is the optional image module (ccwin/core/image.lua); `pic` is the
+--- picture codec (ccwin/core/picture.lua), which handles NFP / CWP1 / CWP2.
+--- The image module stays optional: without it text art still loads.
+function backdrop.attach(g, t, img, pic)
+    gfx, theme, C, image, picture = g, t, t.C, img, pic
+    cache, cacheOrder = {}, {}
 end
 
 local char, rep, concat, byte = string.char, string.rep, table.concat, string.byte
+local sub = string.sub
 
 local function makeRow(w, colourAt)
     local parts, last, start = {}, nil, 0
@@ -158,23 +166,6 @@ end
 ---------------------------------------------------------------------------
 
 local MAX_BYTES = 1048576 -- refuse to slurp in anything bigger
-local MAX_DIM = 4096       -- and anything claiming to be absurdly large
-
---- The whole file at `path`, or nil when it cannot be read.  Only the
---- decoded formats need the raw bytes; NFP and CWP keep streaming
---- through readLine below.
-local function slurp(path)
-    local f = fs.open(path, "r")
-    if not f then return nil end
-    if not f.readAll then
-        pcall(f.close)
-        return nil
-    end
-    local ok, data = pcall(f.readAll)
-    pcall(f.close)
-    if not ok or type(data) ~= "string" then return nil end
-    return data
-end
 
 --- Publish a decoded photo's palette (slots PHOTO_FIRST..) so its index
 --- rows paint with their own colours.  Best effort only: outside
@@ -192,80 +183,32 @@ local function installPhoto(pal)
         end
     end)
 end
+backdrop.installPhoto = installPhoto
 
 --- Load a picture. Returns `rows, w, h` - rows of palette-index bytes -
 --- or nil when the file is missing, empty or malformed, in which case
 --- the caller falls back to another wallpaper instead of showing an
 --- error.  A PNG / JPEG / WebP is decoded and quantized straight to the
---- screen (`tw` x `th`); NFP (one CC colour digit per pixel) and CWP
---- (`CCWIN1 w h` header plus two hex digits per pixel) keep their own
---- size and are stretched by the caller.
+--- screen (`tw` x `th`); NFP, CWP1 and CWP2 come through core/picture.lua
+--- with their own size and are stretched by the caller.
 local function loadPicture(path, tw, th)
     if type(path) ~= "string" or path == "" then return nil end
-    local okSize, size = pcall(fs.getSize, path)
-    if not okSize or type(size) ~= "number" or size > MAX_BYTES then return nil end
+    if not picture then return nil end
+    local data = picture.readFile(path, MAX_BYTES)
+    if not data then return nil end
 
-    -- The decoded formats are binary: sniff the bytes and hand them to
-    -- the image module.  Anything it rejects (truncated, unsupported,
-    -- too large, out of memory) behaves exactly like a missing file.
-    if image then
-        local data = slurp(path)
-        if data and image.sniff(data) then
-            local okDec, rows, pal = pcall(image.decode, data, tw, th)
-            if not okDec or type(rows) ~= "table" then return nil end
-            installPhoto(pal)
-            return rows, tw, th
-        end
+    -- Only the binary formats need the 162 KB image decoder.  A `.cwp`
+    -- wallpaper never loads it at all.
+    if picture.isRaster(data) then
+        if not image then return nil end
+        local okDec, rows, pal = pcall(image.decode, data, tw, th)
+        if not okDec or type(rows) ~= "table" then return nil end
+        installPhoto(pal)
+        return rows, tw, th
     end
 
-    local f = fs.open(path, "r")
-    if not f or not f.readLine then return nil end
-
-    local ok, rows, w, h = pcall(function()
-        local first = f.readLine()
-        if not first then return nil end
-        local out = {}
-        if first:match("^CCWIN1") then
-            local iw, ih = first:match("^CCWIN1%s+(%d+)%s+(%d+)")
-            iw, ih = tonumber(iw), tonumber(ih)
-            if not iw or not ih or iw < 1 or ih < 1 or iw > MAX_DIM or ih > MAX_DIM then
-                return nil
-            end
-            for _ = 1, ih do
-                local line = f.readLine()
-                if not line then break end
-                local buf = {}
-                for i = 1, iw do
-                    buf[i] = char(tonumber(line:sub(i * 2 - 1, i * 2), 16) or 15)
-                end
-                out[#out + 1] = concat(buf)
-            end
-            if #out == 0 then return nil end
-            return out, iw, #out
-        end
-        -- NFP: one character per pixel, CC colour digits.
-        out[1] = first
-        while #out < MAX_DIM do
-            local line = f.readLine()
-            if not line then break end
-            out[#out + 1] = line
-        end
-        local widest = 0
-        for y = 1, #out do
-            local row = out[y]
-            if #row > MAX_DIM then row = row:sub(1, MAX_DIM) end
-            local buf = {}
-            for x = 1, #row do
-                buf[x] = char(tonumber(row:sub(x, x), 16) or 15)
-            end
-            out[y] = concat(buf)
-            if #out[y] > widest then widest = #out[y] end
-        end
-        if widest == 0 then return nil end
-        return out, widest, #out
-    end)
-    pcall(f.close)
-    if not ok or not rows then return nil end
+    local ok, rows, w, h = pcall(picture.decode, data)
+    if not ok or type(rows) ~= "table" then return nil end
     return rows, w, h
 end
 
@@ -314,7 +257,7 @@ local function stored(path, w, h)
 end
 
 --- Build a wallpaper. Returns an array of `w`-character row strings.
-function backdrop.build(w, h, settings)
+local function buildUncached(w, h, settings)
     local kind = settings.wallpaper or "landscape"
     if kind == "solid" then
         -- a "#RRGGBB" colour from Settings renders from its own palette
@@ -345,6 +288,37 @@ function backdrop.build(w, h, settings)
     if rows then return rows end
     if kind == "gradient" then return buildGradient(w, h) end
     return buildLandscape(w, h)
+end
+
+local function remember(key, rows)
+    if not rows then return rows end
+    if cache[key] then return cache[key] end
+    if #cacheOrder >= CACHE_MAX then
+        local oldest = table.remove(cacheOrder, 1)
+        cache[oldest] = nil
+    end
+    cacheOrder[#cacheOrder + 1] = key
+    cache[key] = rows
+    return rows
+end
+
+--- Build a wallpaper. Returns an array of `w`-character row strings.
+-- The result is cached by mode, path, colour, file size and screen size,
+-- so applying a theme or accent never decodes the same picture again.
+function backdrop.build(w, h, settings)
+    settings = settings or {}
+    local kind = tostring(settings.wallpaper or "landscape")
+    local path = tostring(settings.wallpaperPath or "")
+    local size = 0
+    if kind == "picture" and path ~= "" then
+        local ok, n = pcall(fs.getSize, path)
+        if ok and type(n) == "number" then size = n end
+    end
+    local key = kind .. "|" .. path .. "|" .. tostring(settings.wallpaperColour)
+        .. "|" .. size .. "|" .. w .. "x" .. h
+    local hit = cache[key]
+    if hit then return hit end
+    return remember(key, buildUncached(w, h, settings))
 end
 
 return backdrop

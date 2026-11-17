@@ -1,0 +1,235 @@
+--- CC-Windows - picture file codec.
+--
+-- Three formats share this module so the backdrop, Paint and anything else
+-- that grows a picture feature cannot drift apart:
+--
+--   NFP    one hex digit per pixel, one text row per line (hand-written art)
+--   CWP1   "CCWIN1 w h" then two hex digits per pixel per line (old Paint)
+--   CWP2   "CCWIN2 w h\n" then a binary run-length stream (new Paint, shipped
+--          wallpapers).  Each run is (count, colour): a count of 1..255 in
+--          one byte, or a zero byte followed by a 16-bit little-endian
+--          count, then one palette-index byte.
+--
+-- CWP2 keeps a 306x171 wallpaper around 8 KB instead of 102 KB while
+-- decoding back to exactly the same palette rows.
+local picture = {}
+
+picture.MAX_DIM = 4096
+picture.MAX_BYTES = 1048576
+
+local char, byte, sub, rep, concat = string.char, string.byte, string.sub, string.rep, table.concat
+local floor = math.floor
+local tonumber = tonumber
+
+local function headerLine(data)
+    local nl = data:find("\n", 1, true)
+    if not nl then return nil end
+    local line = sub(data, 1, nl - 1)
+    if sub(line, -1) == "\r" then line = sub(line, 1, -2) end
+    return line, nl + 1
+end
+
+local function dims(w, h)
+    w, h = tonumber(w), tonumber(h)
+    if not w or not h then return nil end
+    if w < 1 or h < 1 or w > picture.MAX_DIM or h > picture.MAX_DIM then return nil end
+    return floor(w), floor(h)
+end
+
+local function decodeCwp2(data, w, h, pos)
+    local total = w * h
+    local len = #data
+    local out, row = {}, {}
+    local x, y, done = 0, 0, 0
+    while done < total do
+        if pos > len then return nil, "truncated picture" end
+        local c = byte(data, pos)
+        pos = pos + 1
+        local n = c
+        if c == 0 then
+            if pos + 1 > len then return nil, "truncated run" end
+            n = byte(data, pos) + byte(data, pos + 1) * 256
+            pos = pos + 2
+            if n == 0 then return nil, "empty run" end
+        end
+        if pos > len then return nil, "truncated colour" end
+        local colour = byte(data, pos)
+        pos = pos + 1
+        if done + n > total then return nil, "run past the end" end
+        local ch = char(colour)
+        while n > 0 do
+            local space = w - x
+            local take = n < space and n or space
+            row[#row + 1] = rep(ch, take)
+            x = x + take
+            n = n - take
+            done = done + take
+            if x == w then
+                y = y + 1
+                out[y] = concat(row)
+                row = {}
+                x = 0
+            end
+        end
+    end
+    return out, w, h
+end
+
+--- Decode CWP2 rows (binary palette bytes).
+function picture.decodeCwp2(data)
+    if type(data) ~= "string" or sub(data, 1, 6) ~= "CCWIN2" then return nil end
+    local line, pos = headerLine(data)
+    if not line then return nil end
+    local w, h = line:match("^CCWIN2%s+(%d+)%s+(%d+)%s*$")
+    w, h = dims(w, h)
+    if not w then return nil, "bad dimensions" end
+    return decodeCwp2(data, w, h, pos)
+end
+
+local function decodeText(data, w, h, pos, hex2, widthOf)
+    local rows = {}
+    local len = #data
+    for y = 1, h do
+        if pos > len then break end
+        local nl = data:find("\n", pos, true)
+        local line
+        if nl then
+            line = sub(data, pos, nl - 1)
+            pos = nl + 1
+        else
+            line = sub(data, pos)
+            pos = len + 1
+        end
+        if sub(line, -1) == "\r" then line = sub(line, 1, -2) end
+        local out = {}
+        if hex2 then
+            for x = 1, w do
+                out[x] = char(tonumber(sub(line, x * 2 - 1, x * 2), 16) or 15)
+            end
+        else
+            local n = #line
+            if n > picture.MAX_DIM then n = picture.MAX_DIM end
+            for x = 1, n do
+                out[x] = char(tonumber(sub(line, x, x), 16) or 15)
+            end
+        end
+        rows[y] = concat(out)
+    end
+    if #rows == 0 then return nil end
+    return rows, widthOf and widthOf(rows) or w, #rows
+end
+
+local function widest(rows)
+    local w = 0
+    for i = 1, #rows do
+        if #rows[i] > w then w = #rows[i] end
+    end
+    return w
+end
+
+--- Decode any supported picture.  Returns `rows, w, h` (binary palette
+--- bytes) or nil plus a short reason.
+function picture.decode(data)
+    if type(data) ~= "string" or data == "" then return nil, "empty file" end
+
+    if sub(data, 1, 6) == "CCWIN2" then
+        return picture.decodeCwp2(data)
+    end
+
+    if sub(data, 1, 6) == "CCWIN1" then
+        local line, pos = headerLine(data)
+        if not line then return nil, "bad header" end
+        local w, h = line:match("^CCWIN1%s+(%d+)%s+(%d+)%s*$")
+        w, h = dims(w, h)
+        if not w then return nil, "bad dimensions" end
+        return decodeText(data, w, h, pos, true)
+    end
+
+    if sub(data, 1, 5) == "CCWIN" then return nil, "unknown picture version" end
+
+    -- NFP: a text grid of one hex digit per pixel.
+    if data:find("\0", 1, true) then return nil, "binary file" end
+    local rows, w, h = decodeText(data, 1, picture.MAX_DIM, 1, false, widest)
+    if not rows then return nil, "empty picture" end
+    return rows, w, h
+end
+
+--- True when the data starts with the CWP2 marker.
+function picture.isCwp2(data)
+    return type(data) == "string" and sub(data, 1, 6) == "CCWIN2"
+end
+
+--- True when the data carries a raster photograph (PNG / JPEG / WebP).
+-- The backdrop uses this to avoid loading the big decoder for text art.
+function picture.isRaster(data)
+    if type(data) ~= "string" then return false end
+    if sub(data, 1, 8) == "\137PNG\r\n\26\n" then return true end
+    if sub(data, 1, 3) == "\255\216\255" then return true end
+    if sub(data, 1, 4) == "RIFF" and sub(data, 9, 12) == "WEBP" then return true end
+    return false
+end
+
+local function flushRun(body, colour, n)
+    while n > 0 do
+        local take = n > 65535 and 65535 or n
+        if take <= 255 then
+            body[#body + 1] = char(take)
+        else
+            body[#body + 1] = char(0, take % 256, floor(take / 256))
+        end
+        body[#body + 1] = char(colour)
+        n = n - take
+    end
+end
+
+--- Encode palette rows as CWP2.  Returns nil when the dimensions are
+--- outside the format's limits.
+function picture.encode(rows, w, h)
+    w, h = dims(w, h)
+    if not w or type(rows) ~= "table" then return nil end
+
+    local body = {}
+    local runColour, runLength = nil, 0
+    for y = 1, h do
+        local row = rows[y]
+        if type(row) ~= "string" then row = "" end
+        for x = 1, w do
+            local c = byte(row, x) or 0
+            if c == runColour then
+                runLength = runLength + 1
+            else
+                if runLength > 0 then flushRun(body, runColour, runLength) end
+                runColour, runLength = c, 1
+            end
+        end
+    end
+    if runLength > 0 then flushRun(body, runColour, runLength) end
+
+    return "CCWIN2 " .. w .. " " .. h .. "\n" .. concat(body)
+end
+
+--- Read a picture file whole, refusing anything over `maxBytes` first.
+function picture.readFile(path, maxBytes)
+    maxBytes = maxBytes or picture.MAX_BYTES
+    if type(path) ~= "string" or path == "" then return nil end
+    local okSize, size = pcall(fs.getSize, path)
+    if not okSize or type(size) ~= "number" or size > maxBytes then return nil end
+    local f = fs.open(path, "r")
+    if not f or type(f.readAll) ~= "function" then
+        if f then pcall(f.close) end
+        return nil
+    end
+    local ok, data = pcall(f.readAll)
+    pcall(f.close)
+    if not ok or type(data) ~= "string" or #data > maxBytes then return nil end
+    return data
+end
+
+--- Load and decode a picture file.
+function picture.load(path, maxBytes)
+    local data = picture.readFile(path, maxBytes)
+    if not data then return nil end
+    return picture.decode(data)
+end
+
+return picture

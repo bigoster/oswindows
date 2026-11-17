@@ -6,7 +6,7 @@ app.name = "Notepad"
 app.icon = "editor"
 app.defaultSize = { 280, 190 }
 
-local theme, widgets, dialogs, C
+local theme, widgets, dialogs, C, storage
 local state
 
 local GUTTER = 26
@@ -23,6 +23,7 @@ function app.create(win, opts, ctx)
     theme, widgets, dialogs = ctx.theme, ctx.widgets, ctx.dialogs
     C = theme.C
     state = ctx.state
+    storage = ctx.storage
 
     local self = {
         path = opts and opts.path or nil,
@@ -47,16 +48,46 @@ function app.create(win, opts, ctx)
         ctx.wm.setTitle(win, name .. flag .. " - Notepad")
     end
 
+    local MAX_LOAD = 262144
+
     local function loadFile(path)
+        local okSize, size = pcall(fs.getSize, path)
+        if not okSize or type(size) ~= "number" then
+            self.status = "Cannot open " .. path
+            win.dirty = true
+            return false, self.status
+        end
+        if size > MAX_LOAD then
+            self.status = "File is too large (limit 256 KB)"
+            win.dirty = true
+            return false, self.status
+        end
         local f = fs.open(path, "r")
-        if not f then return false, "Cannot open " .. path end
-        local lines = {}
+        if not f then
+            self.status = "Cannot open " .. path
+            win.dirty = true
+            return false, self.status
+        end
+        local lines, total = {}, 0
         while true do
             local line = f.readLine()
             if line == nil then break end
+            total = total + #line + 1
+            if total > MAX_LOAD then
+                pcall(f.close)
+                self.status = "File is too large (limit 256 KB)"
+                win.dirty = true
+                return false, self.status
+            end
+            if line:find("\0", 1, true) then
+                pcall(f.close)
+                self.status = "This looks like a binary file"
+                win.dirty = true
+                return false, self.status
+            end
             lines[#lines + 1] = line
         end
-        f.close()
+        pcall(f.close)
         if #lines == 0 then lines = { "" } end
         self.lines = lines
         self.path = path
@@ -71,14 +102,25 @@ function app.create(win, opts, ctx)
 
     local function saveFile(path)
         if not path then return end
-        local f = fs.open(path, "w")
-        if not f then
-            self.status = "Cannot write " .. path
+        local data = table.concat(self.lines, "\n") .. "\n"
+        local ok, why
+        if storage then
+            ok, why = storage.write(path, data, { backup = true })
+        else
+            local f = fs.open(path, "w")
+            if not f then
+                ok, why = false, "cannot open"
+            else
+                ok, why = pcall(f.write, data)
+                local okClose, closeErr = pcall(f.close)
+                if ok and not okClose then ok, why = false, tostring(closeErr) end
+            end
+        end
+        if not ok then
+            self.status = "Cannot write " .. path .. (why and (" (" .. why .. ")") or "")
             win.dirty = true
             return
         end
-        for _, line in ipairs(self.lines) do f.writeLine(line) end
-        f.close()
         self.path = path
         self.modified = false
         self.status = "Saved " .. fs.getName(path)
@@ -145,7 +187,9 @@ function app.create(win, opts, ctx)
             path = (state and state.settings and state.settings.lastPath) or "/",
             filter = function(path)
                 if fs.isDir(path) then return true end
-                return not path:match("%.png$") and not path:match("%.nfp$")
+                local ext = (path:match("%.([%w]+)$") or ""):lower()
+                return ext ~= "png" and ext ~= "jpg" and ext ~= "jpeg"
+                    and ext ~= "webp" and ext ~= "nfp" and ext ~= "cwp"
             end,
             onPick = function(path)
                 confirmDiscard(function()

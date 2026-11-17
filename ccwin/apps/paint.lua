@@ -10,7 +10,7 @@ app.name = "Paint"
 app.icon = "paint"
 app.defaultSize = { 300, 210 }
 
-local theme, widgets, dialogs, C
+local theme, widgets, dialogs, C, picture, storage
 local state
 
 local TOOLBAR_H = 36
@@ -37,6 +37,7 @@ function app.create(win, opts, ctx)
     theme, widgets, dialogs = ctx.theme, ctx.widgets, ctx.dialogs
     C = theme.C
     state = ctx.state
+    picture, storage = ctx.picture, ctx.storage
 
     local self = {
         tool = "pencil",
@@ -168,33 +169,57 @@ function app.create(win, opts, ctx)
         ctx.wm.setTitle(win, name .. " - Paint")
     end
 
+    --- Write through core/storage.lua when it is present (it is in the
+    --- shell), so a power cut can never truncate a picture.
+    local function writeFile(path, data)
+        if storage then return storage.write(path, data, { backup = true }) end
+        local f, why = fs.open(path, "w")
+        if not f then return false, why end
+        local ok, err = pcall(f.write, data)
+        local okClose, closeErr = pcall(f.close)
+        if not ok then return false, tostring(err) end
+        if not okClose then return false, tostring(closeErr) end
+        return true
+    end
+
     local function saveTo(path, asNfp)
-        local f = fs.open(path, "w")
-        if not f then
-            self.status = "Cannot write " .. path
+        local data
+        if asNfp then
+            local out = {}
+            for y = 1, chh do
+                local row, line = canvas[y], {}
+                for x = 1, cw do
+                    local v = string.byte(row, x)
+                    line[x] = v < 16 and string.format("%x", v) or "0"
+                end
+                out[y] = table.concat(line)
+            end
+            data = table.concat(out, "\n") .. "\n"
+        elseif picture then
+            -- CWP2: the same picture in roughly a tenth of the bytes
+            data = picture.encode(canvas, cw, chh)
+        else
+            local out = { "CCWIN1 " .. cw .. " " .. chh }
+            for y = 1, chh do
+                local row, line = canvas[y], {}
+                for x = 1, cw do
+                    line[x] = string.format("%02x", string.byte(row, x))
+                end
+                out[#out + 1] = table.concat(line)
+            end
+            data = table.concat(out, "\n") .. "\n"
+        end
+        if not data then
+            self.status = "Cannot encode picture"
             win.dirty = true
             return
         end
-        if asNfp then
-            for y = 1, chh do
-                local row, out = canvas[y], {}
-                for x = 1, cw do
-                    local v = string.byte(row, x)
-                    out[x] = v < 16 and string.format("%x", v) or "0"
-                end
-                f.writeLine(table.concat(out))
-            end
-        else
-            f.writeLine("CCWIN1 " .. cw .. " " .. chh)
-            for y = 1, chh do
-                local row, out = canvas[y], {}
-                for x = 1, cw do
-                    out[x] = string.format("%02x", string.byte(row, x))
-                end
-                f.writeLine(table.concat(out))
-            end
+        local ok, why = writeFile(path, data)
+        if not ok then
+            self.status = "Cannot write " .. path .. (why and (" (" .. why .. ")") or "")
+            win.dirty = true
+            return
         end
-        f.close()
         self.path = path
         self.status = "Saved " .. fs.getName(path)
         setTitle()
@@ -224,51 +249,25 @@ function app.create(win, opts, ctx)
     end
 
     local function loadFrom(path)
-        local f = fs.open(path, "r")
-        if not f then
+        local data = picture and picture.readFile(path, 1048576)
+        if not data then
             self.status = "Cannot open " .. path
             win.dirty = true
             return
         end
-        local first = f.readLine()
-        local rows = {}
-        if first and first:match("^CCWIN1") then
-            local w, h = first:match("^CCWIN1%s+(%d+)%s+(%d+)")
-            w, h = tonumber(w), tonumber(h)
-            if not w or not h or w < 1 or h < 1 or w > 4096 or h < 1 or h > 4096 then
-                f.close()
-                self.status = "Not a valid picture"
-                win.dirty = true
-                return
-            end
-            for _ = 1, h do
-                local line = f.readLine()
-                if not line then break end
-                local out = {}
-                for i = 1, w do
-                    local byte = tonumber(line:sub(i * 2 - 1, i * 2), 16)
-                    out[i] = string.char(byte or WHITE)
-                end
-                rows[#rows + 1] = table.concat(out)
-            end
-        elseif first then
-            -- NFP: one character per pixel, CC colour digits.
-            if #first > 0 then rows[1] = first end
-            while true do
-                local line = f.readLine()
-                if not line then break end
-                rows[#rows + 1] = line
-            end
-            for y = 1, #rows do
-                local out = {}
-                for x = 1, #rows[y] do
-                    local d = tonumber(rows[y]:sub(x, x), 16)
-                    out[x] = string.char(d or 15)
-                end
-                rows[y] = table.concat(out)
-            end
+        -- A photo belongs on the desktop, not in the palette canvas: show
+        -- where it can be used instead of painting 112-colour noise.
+        if picture.isRaster(data) then
+            self.status = "Photo - use Settings > Wallpaper to show it"
+            win.dirty = true
+            return
         end
-        f.close()
+        local ok, rows = pcall(picture.decode, data)
+        if not ok or type(rows) ~= "table" then
+            self.status = "Not a valid picture"
+            win.dirty = true
+            return
+        end
 
         if #rows == 0 then
             self.status = "Empty picture"

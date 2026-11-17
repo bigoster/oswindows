@@ -257,6 +257,9 @@ Called once per window. **Must return the instance table** (conventionally
   | `ctx.icons` | 8×8 icon drawing |
   | `ctx.apps` | table of all loaded app modules, keyed by id |
   | `ctx.menu` | right-click context menus (section 10) |
+  | `ctx.storage` | atomic file writes, size caps and the OS error log |
+  | `ctx.picture` | NFP / CWP1 / CWP2 picture codec (`decode`, `encode`, `readFile`) |
+  | `ctx.image` | PNG / JPEG / WebP decoder, loaded on first use |
   | `ctx.shortcuts.create(spec)` | drop a shortcut on the desktop (see below) |
   | `ctx.launch(appId, opts)` | open a window for another app |
 
@@ -833,9 +836,13 @@ wallpaper renders from its own palette slot, so any hex value works. An
 invalid or missing value falls back to the built-in blue.
 
 The shipped wallpapers are ordinary image files in `/ccwin/images`, so any
-file there can be the background: NFP and CWP are read line by line, and
-PNG / JPEG / WebP files are decoded by `ccwin/core/image.lua` (pure Lua,
-no libraries) straight to the screen size with a quantized palette.
+file there can be the background: NFP and CWP files are decoded by
+`ccwin/core/picture.lua` — CWP1 is Paint's text format and CWP2 is the
+run-length format Paint now writes, which stores a 306×171 picture in
+roughly 8 KB — and PNG / JPEG / WebP files are decoded by
+`ccwin/core/image.lua` (pure Lua, no libraries) straight to the screen
+size with a quantized palette. The image decoder is only loaded when a
+photo is actually used, so text wallpapers never pay for it.
 Older configs that still say
 `"landscape"` or `"gradient"` keep working: `main.lua` migrates them to
 `"picture"` plus the matching file, and `backdrop.build` renders those
@@ -852,6 +859,21 @@ state.settings.theme = "dark"
 state.save()
 state.applySettings()
 ```
+
+`state.save()` writes through `core/storage.lua`: the new table text lands
+in `/ccwin/settings.cfg.new`, is read back to check its length, then
+replaces the real file and keeps the previous one as `.bak`. At boot the
+file is capped at 64 KB and every key is checked against the schema in
+`main.lua` — an invalid value is repaired in memory with a warning rather
+than aborting the boot, and a boot that was interrupted starts in safe
+mode with defaults in memory only, leaving the user's file untouched.
+
+Programs that write their own files should use `ctx.storage.write(path,
+data)` instead of a bare `fs.open(path, "w")`: it stages the bytes in a
+`.new` file, verifies them, swaps atomically, and can keep a `.bak` copy
+with `{ backup = true }`. `ctx.storage.read(path, maxBytes)` refuses
+oversized files before reading them, and `ctx.storage.append(path, text,
+maxBytes)` keeps a log bounded.
 
 Use `state.onPower("shutdown")` rather than calling `os.shutdown()` from a
 GUI app; both are safe, but the former is the intended path.
@@ -1186,8 +1208,9 @@ picture instead — drawn scaled into the icon cell — in either of two
 places.
 
 **Beside the program**, named after it: `solitaire.lua` looks for
-`solitaire.nfp` (the format Paint writes for a `.nfp` name) and then
-`solitaire.cwp` (Paint's own `CCWIN1` format) in the same folder.
+`solitaire.nfp` (one hex digit per pixel) and then `solitaire.cwp` —
+Paint's own formats, both the older `CCWIN1` text file and the
+run-length `CCWIN2` that Paint writes now — in the same folder.
 
 **Inside the program**, as a run of comment lines:
 
@@ -1204,9 +1227,11 @@ A comment line reading `icon:` opens the block; every following comment
 line made of hex digits is one picture row, and the block ends at the
 first line that is not — so the file stays ordinary Lua either way.
 
-Either way it is the NFP picture: up to 64×64, one hex digit per pixel,
-that digit being the palette index (`0` white … `f` black). Finding the
-picture only ever *reads* text — the program is never executed for it.
+Whichever file it came from, the result is the same NFP-style picture: up
+to 64×64, one hex digit per pixel, that digit being the palette index
+(`0` white … `f` black); CWP files are decoded and converted, and one
+larger than 64×64 is ignored before it is decoded. Finding the picture
+only ever *reads* the file — the program is never executed for it.
 
 The rows are copied into the link (`.lnk`) when the link is made and drawn
 scaled into the icon box (aspect kept, centred) on every frame, so the link
