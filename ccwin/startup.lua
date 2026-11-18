@@ -15,6 +15,33 @@ CCWIN_DIR = fs.combine(dir, "ccwin")
 
 _CCWIN_RUNNING = true
 
+-- Finish an interrupted update before the OS reads any of its modules. The
+-- updater writes a journal before it swaps files and calls update.recover()
+-- here on the next boot: old files come back, staging is discarded.
+do
+    local okMod, update = pcall(dofile, fs.combine(CCWIN_DIR, "core/update.lua"))
+    if okMod and type(update) == "table" and type(update.recover) == "function" then
+        local ok, restored, journal = pcall(update.recover, CCWIN_DIR)
+        if ok and journal then
+            pcall(function()
+                local logPath = fs.combine(CCWIN_DIR, "last-error.log")
+                local old = ""
+                if fs.exists(logPath) then
+                    local h = fs.open(logPath, "r")
+                    if h then old = h.readAll() or ""; h.close() end
+                end
+                if #old > 32768 then old = old:sub(#old - 32767) end
+                local h = fs.open(logPath, "w")
+                if h then
+                    h.write(old .. "[" .. tostring(os.time()) .. "] update: rolled back "
+                        .. tostring(restored or 0) .. " file(s) after an interrupted install\n")
+                    h.close()
+                end
+            end)
+        end
+    end
+end
+
 local ok, err = pcall(dofile, fs.combine(CCWIN_DIR, "main.lua"))
 if not ok then
     _CCWIN_RUNNING = nil

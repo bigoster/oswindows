@@ -160,14 +160,13 @@ drop it in: [section 19](#19-drop-in-programs).
 
 ## 3. Registering an app
 
-Three lists control an app's life. All three must be edited (the last one
-in two files).
+Three lists control an app's life. All three must be edited.
 
 | List | File | What it does |
 | --- | --- | --- |
 | `APP_LIST` | `ccwin/main.lua` | loads the file at boot: `dofile(path("apps/" .. id .. ".lua"))` |
 | `DESKTOP_APPS` | `ccwin/core/desktop.lua` | puts an icon on the desktop and an entry in the start menu |
-| installer manifest | `install.lua` **and** `files.txt` | ships the file to players over `wget`, and tells the in-OS updater about it |
+| `SOURCES` | `tools/build.lua` | ships the file in `dist/` and lists it in `files.txt` / `manifest.txt` |
 
 ```lua
 -- ccwin/main.lua
@@ -175,19 +174,23 @@ local APP_LIST = { "console", "explorer", "editor", "paint", "settings", "system
 
 -- ccwin/core/desktop.lua
 local DESKTOP_APPS = { "explorer", "console", "editor", "paint", "settings", "system", "hello" }
+
+-- tools/build.lua, inside SOURCES
+"apps/hello.lua",
 ```
 
-```lua
--- install.lua, inside the manifest table: { source, destination }
-{ "ccwin/apps/hello.lua", "/ccwin/apps/hello.lua" },
+Every file is tagged **core** unless it is named in the build's `STANDARD`
+or `EXTRAS` tables (`STANDARD` holds the console/editor/explorer/settings/
+system apps and the fabric agent; `EXTRAS` holds `image.lua`,
+`browser.lua` and `paint.lua`). Put a new app in the set that matches what
+it needs.
 
--- files.txt, the same pair, one per line
-ccwin/apps/hello.lua /ccwin/apps/hello.lua
-```
-
-The two manifests must stay identical — `install_test.lua` fails when they
-drift apart — and a new system file means bumping `ccwin/version` so the
-System app's updater can announce it.
+`files.txt` and `manifest.txt` are generated — do not hand-edit them. Run
+`lua52 tools/build.lua` after adding a file and commit `dist/` together with
+the sources. `install_test.lua` fails when a source Lua file is missing from
+the build, when a `dist/` file is missing from the manifest, or when
+`files.txt` and `manifest.txt` disagree. Bump `ccwin/version` before
+publishing so the System app's updater can announce the change.
 
 `APP_LIST` entries are **filenames** (minus `.lua`); the module's `app.id` is
 the **key** in the apps table (`apps[app.id or id] = app`), and that is what
@@ -1095,8 +1098,10 @@ ctx.launch("hello", { count = 5 })
 - [ ] `app.create(win, opts, ctx)` **returns** the instance table
 - [ ] added to `APP_LIST` in `ccwin/main.lua`
 - [ ] added to `DESKTOP_APPS` in `ccwin/core/desktop.lua`
-- [ ] added to the manifest in `install.lua` **and** to `files.txt`, then
-      `ccwin/version` bumped (`install_test.lua` checks they agree)
+- [ ] added to `SOURCES` in `tools/build.lua` and given the right
+      `STANDARD` / `EXTRAS` component
+- [ ] `lua52 tools/build.lua` run; `dist/`, `files.txt` and `manifest.txt`
+      committed with the source; `ccwin/version` bumped before publishing
 - [ ] or, for a drop-in install: first line is `--- CC-Windows - ...` (omit
       it on purpose to stay a console program) and the top level only
       defines and returns the app — no `sleep`, `peripheral` or fs writes
@@ -1154,8 +1159,11 @@ if path then loadFile(path) end
 
 **Registration is three lists, not one.** A file that is in `APP_LIST` but
 missing from `DESKTOP_APPS` runs but has no icon or start-menu entry; missing
-from `install.lua` and `files.txt` it never reaches players, and installed
+from `SOURCES` in `tools/build.lua` it never reaches players, and installed
 computers are never told to fetch it.
+
+**Never edit `dist/` by hand.** It is generated from `ccwin/` by
+`tools/build.lua`; `tools/build.lua --check` fails when the two disagree.
 
 **Lua 5.2.** `//` is a syntax error. Use `math.floor(a / b)`.
 

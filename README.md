@@ -39,23 +39,65 @@ Or without saving a copy of the installer:
 wget run https://raw.githubusercontent.com/bigoster/oswindows/main/install.lua
 ```
 
-`install.lua` fetches every file from the repository, checks that each Lua
-file really is a compilable chunk (so a truncated download or an HTML error
-page is caught rather than installed), and only then puts it in place.
-It also writes `/ccwin/version`, the marker the in-OS updater compares
-against GitHub (see [Updating](#updating)). Re-running it upgrades an
-existing install in place and never touches `/ccwin/settings.cfg`.
+The installer can also do a smaller install:
 
-It downloads to a `<file>.new` temp name first because the ROM's `wget`
+```
+install.lua            -- full: core, standard apps and extras
+install.lua standard   -- core + the standard apps
+install.lua core       -- the smallest bootable desktop
+```
+
+`install.lua` reads `manifest.txt`, the release's file list. Each line
+carries the file's size, SHA-256 hash, download path, destination and
+component. Nothing is installed before its bytes match the size and hash, and
+every Lua download is compiled with `load()` (never run) first. The files
+themselves come from `dist/ccwin/`, the minified release build; the readable
+sources in `ccwin/` are not downloaded.
+
+Re-running the installer is an upgrade: files whose SHA-256 already matches
+are skipped, so only changed files cross the network. It records what it
+installed in `/ccwin/.installed-manifest`, which lets the in-OS updater keep
+the same component selection, and it never touches `/ccwin/settings.cfg`.
+
+Downloads go to a `<file>.new` temp name first because the ROM's `wget`
 refuses to overwrite an existing file *and* reports success even when the
 download failed — the installer verifies the bytes itself instead of trusting
-the exit status.
+the exit status. Every temp file and the manifest copy are removed on both
+success and failure, so an interrupted install leaves no residue beyond
+files that were already complete.
+
+### Building a release
+
+The repository ships readable sources; players download a minified build.
+After changing anything under `ccwin/`, rebuild and check it in:
+
+```
+lua52 tools/build.lua          # writes dist/ccwin, files.txt, manifest.txt
+lua52 tools/build.lua --check  # fails when dist is stale
+lua52 tools/budget.lua         # size budgets and manifest sanity
+```
+
+`tools/build.lua` minifies each Lua file with `tools/minify.lua` (comments and
+whitespace only — identifiers are never renamed), copies non-Lua files byte
+for byte, and refuses to build when a Lua file under `ccwin/` is missing from
+its `SOURCES` list. `files.txt` stays in its old two-column form so 1.2
+installs can still read it; `manifest.txt` is what current installers use.
+The build fails if the full install exceeds 350 KB, core exceeds 210 KB, or
+any single file exceeds 200 KB.
 
 ### Manual install
 
-1. Copy the `ccwin/` folder to the **root** of a computer's filesystem.
-2. Copy `ccwin/startup.lua` to `/startup.lua` on the root.
+Use the built release (`dist/ccwin/`) rather than the source tree: it is
+minified and about half the size.
+
+1. Copy `dist/ccwin/` to `/ccwin/` on the computer.
+2. Copy `dist/ccwin/startup.lua` to `/startup.lua` on the root.
 3. Reboot.
+
+The readable `ccwin/` sources work the same way if you prefer; only the size
+differs. A manual copy does not create `/ccwin/.installed-manifest`, so the
+first in-OS update treats the computer as having every component and hashes
+each local file once.
 
 ```
 /
@@ -76,7 +118,9 @@ the exit status.
     │   ├── desktop.lua   (shortcuts, wallpaper, taskbar, clock, background cache)
     │   ├── backdrop.lua  (wallpaper renderers, picture loading)
     │   ├── picture.lua   (NFP / CWP1 / CWP2 picture codec)
-    │   ├── storage.lua   (atomic writes, size caps, error log)
+    │   ├── hash.lua      (SHA-256 for verified downloads)
+    │   ├── update.lua    (transactional update journal, rollback and recovery)
+    │   ├── storage.lua   (atomic writes, size caps, cache/log housekeeping)
     │   ├── image.lua     (pure-Lua PNG / JPEG / WebP decoders, loaded on demand)
     │   ├── fabric.lua    (CC:CE fabric link — "Run on", incoming programs)
     │   └── programs.lua  (recognising and opening CC-Windows programs)
@@ -106,27 +150,38 @@ The **System** app has an *Updates* band at the top with one button:
   single small download — and compares it with `/ccwin/version` on the
   computer. It reports either `Up to date - version 1.2 is installed.` or
   `Update available: <local> to <remote>`.
-- **Install update** then downloads `files.txt` (the file list), fetches
-  every system file through it and replaces the ones whose bytes differ
-  from what is installed. Files that already match are left alone, and
-  every Lua file is compiled with `load()` — never run — before it is
-  allowed near the filesystem. When it finishes it records the new
-  `/ccwin/version` and asks for a `reboot`.
+- **Install update** reads `manifest.txt`, keeps the components this computer
+  installed (core, standard, extras, from `/ccwin/.installed-manifest`), and
+  compares the release hashes with the local files. Unchanged files are
+  skipped without a download; changed ones are fetched one at a time from
+  `dist/ccwin/`, checked against the manifest's size and SHA-256, and Lua
+  files are compiled with `load()` — never run — before being staged.
 
-Everything happens in the background (`http.request` plus `feed`), so the
-window stays alive while it works. While a check or install is running the
-button reads **Cancel** — one click aborts it (files already written stay,
-and the version marker is only recorded by a completed update, so the
-update is simply offered again next time). If `http` is off, the repository
-is unreachable or a download comes back broken, the band says exactly what
-went wrong and **no file is touched**.
+Nothing live is touched while downloads run. Verified files collect in
+`/ccwin/.update/new`; only when every file has arrived are they swapped into
+place as one transaction. The old files move to `/ccwin/.update/old` and a
+journal is written first. Deleting that journal is the commit point: if the
+computer loses power mid-swap, `startup.lua` runs `update.recover()` before
+`main.lua`, restores the old files from the backup and discards the staging
+tree. A failure, cancel or closing the window discards staging and leaves
+the installed OS exactly as it was.
+
+When it finishes, the updater records `/ccwin/.installed-manifest` and the
+new `/ccwin/version`, then asks for a `reboot`. Everything happens in the
+background (`http.request` plus `feed`), so the window stays alive while it
+works. If `http` is off, the repository is unreachable, a download is corrupt
+or the disk is too full, the band says exactly what went wrong.
 
 **When you push changes to the repository:**
 
-1. Add any new system file to *both* `files.txt` and the `FILES` table in
-   `install.lua` (`install_test.lua` fails when the two lists differ).
-2. Bump the number in `ccwin/version` — that file is what every installed
-   computer compares against, so nothing is offered until it changes.
+1. Add any new system file to `SOURCES` in `tools/build.lua` (the build fails
+   if a Lua file under `ccwin/` is missing). If it is an app, also add it to
+   `APP_LIST` and `DESKTOP_APPS`.
+2. Run `lua52 tools/build.lua` and commit the sources together with `dist/`,
+   `files.txt` and `manifest.txt`.
+3. Bump the number in `ccwin/version` before publishing — that file is what
+   every installed computer compares against, so nothing is offered until it
+   changes.
 
 Hand-edited system files are replaced the next time an update installs,
 exactly like re-running the installer.
@@ -206,9 +261,19 @@ exactly like re-running the installer.
   unserialised safely, migrated from older wallpaper names/palette
   indices, and each key is checked against its schema; bad values are
   repaired in memory with a warning instead of crashing the boot
-- **Small install**: CWP2 pictures, runtime picture caches and an
-  on-demand PNG/JPEG/WebP decoder keep the whole `ccwin` tree at about
-  565 KB, with no change to the app contract
+- **Transactional updates**: the updater stages verified bytes, writes a
+  journal, swaps files and only then deletes the journal — the commit point.
+  A power cut at any point rolls back to the previous files on the next boot;
+  the boot recovery runs before `main.lua`
+- **Storage housekeeping**: boot restores `settings.cfg` from its `.bak` if a
+  power cut lost the live file, trims `/ccwin/last-error.log` to 32 KB, caps
+  `/ccwin/cache` at 128 KB (oldest first) and removes stale `.new` and update
+  staging files left by an interruption
+- **Small install**: the minified release is **341 KB full**, **209 KB
+  standard** and **140 KB core** (69 KB of standard apps, 132 KB of extras),
+  down from 594 KB of readable source. CWP2 pictures, runtime picture caches
+  and an on-demand PNG/JPEG/WebP decoder keep it there, with no change to the
+  app contract
 
 **Apps**
 
@@ -431,12 +496,20 @@ windowed app opens, console fallback for header'd non-apps, Explorer
 double-click vs Open in Notepad, a disc program reaching the core apps through
 `ctx`, and the `ccwin` global).
 
-`update_test` drives the System app's OS updater on its own: check →
-`Update available` → install against the *real* `files.txt` (every
-destination verified byte-identical, nothing ever executed), plus the
-up-to-date path, http switched off, an HTTP 404, an HTML page instead of a
-version, a rejected file list, a corrupt download, the 30-second timeout
-and closing mid-update.
+`update_test` drives the System app's OS updater on its own: version check →
+manifest → delta plan → verified staging → transactional commit against the
+real `manifest.txt` and `dist/` tree, plus component filtering, a corrupt
+download, a manifest/version mismatch, a traversal path, low disk, HTTP 404,
+http switched off, an HTML page instead of a version, the 30-second timeout,
+cancelling, and simulated power cuts during commit with boot recovery.
+
+`install_test` runs the real `install.lua` against an in-memory CraftOS
+filesystem: full / standard / core selection, byte-identical installs, delta
+re-runs that skip matching hashes, size / SHA-256 / compile / unsafe-path
+failures, and `manifest.txt` / `files.txt` / `dist/` consistency plus the
+size budgets. The built dist tree also boots under harness runs 1, 2, 4 and
+5 by pointing `CCWIN_PROJ` at `dist/ccwin`, and a 22-file core-only tree
+boots under the boot-only `runcore` mode.
 
 ## Licence
 

@@ -7,6 +7,7 @@ local wm = {}
 local gfx, theme, widgets, dialogs, icons, menu, C
 local apps, state, desktop, fabric, programs
 local storage, picture, image
+local hash, update
 local rootDC
 
 local rep, sub, char = string.rep, string.sub, string.char
@@ -61,6 +62,7 @@ function wm.attach(d)
     fabric = d.fabric
     programs = d.programs
     storage, picture, image = d.storage, d.picture, d.image
+    hash, update = d.hash, d.update
     rootDC = gfx.newDC(0, 0, gfx.size())
 end
 
@@ -330,6 +332,9 @@ function wm.context()
             storage = storage,
             picture = picture,
             image = image,
+            -- SHA-256 and the transactional update helpers (System app).
+            hash = hash,
+            update = update,
             launch = function(appId, opts) return wm.create(appId, opts) end,
             -- The context is built before setDesktop runs, so this closure
             -- reads the upvalue lazily. Explorer uses it for "Create link".

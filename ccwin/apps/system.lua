@@ -31,9 +31,12 @@ local UPD_BODY = 41
 local OWNER, REPO, BRANCH = "bigoster", "oswindows", "main"
 local BASE = "https://raw.githubusercontent.com/" .. OWNER .. "/" .. REPO .. "/" .. BRANCH
 local VERSION_URL = BASE .. "/ccwin/version"
-local MANIFEST_URL = BASE .. "/files.txt"
+local MANIFEST_URL = BASE .. "/manifest.txt"
 local LOCAL_VERSION = "/ccwin/version"
+local STATE_PATH = "/ccwin/.installed-manifest"
+local UPDATE_BASE = "/ccwin"
 local HTTP_TIMEOUT = 30
+local MIN_FREE = 32768
 
 local function dc_size(win)
     if win.content then return win.content.w, win.content.h end
@@ -186,9 +189,70 @@ local function wrapText(s, maxChars)
     return lines
 end
 
+local COMPONENTS = { core = true, standard = true, extras = true }
+
+--- Parse manifest.txt: a version line and one line per file
+-- ("<size> <sha256> <source> <destination> <component>").
+local function parseManifest(body)
+    if type(body) ~= "string" then return nil, "no data" end
+    local entries, version = {}, nil
+    for line in body:gmatch("[^\r\n]+") do
+        local s = line:match("^%s*(.-)%s*$")
+        if s ~= "" and s:sub(1, 1) ~= "#" then
+            local v = s:match("^version%s+(%S+)$")
+            if v then
+                version = v
+            else
+                local size, digest, src, dst, comp =
+                    s:match("^(%d+)%s+(%x+)%s+(%S+)%s+(%S+)%s+(%S+)$")
+                if not size then
+                    return nil, "bad line: " .. s
+                end
+                if #digest ~= 64 then
+                    return nil, "bad SHA-256 on line: " .. s
+                end
+                if not safeSrc(src) or not safeDst(dst) then
+                    return nil, "unsafe path on line: " .. s
+                end
+                if not COMPONENTS[comp] then
+                    return nil, "unknown component on line: " .. s
+                end
+                entries[#entries + 1] = {
+                    size = tonumber(size),
+                    hash = digest:lower(),
+                    src = src,
+                    dst = dst,
+                    comp = comp,
+                }
+            end
+        end
+    end
+    if not version then return nil, "no version line" end
+    if #entries == 0 then return nil, "the file list is empty" end
+    return { version = version, entries = entries }
+end
+
+local function manifestBody(version, entries)
+    local lines = { "version " .. version }
+    for _, e in ipairs(entries) do
+        lines[#lines + 1] = ("%d %s %s %s %s")
+            :format(e.size, e.hash, e.src, e.dst, e.comp)
+    end
+    return table.concat(lines, "\n") .. "\n"
+end
+
+local function entryMap(entries)
+    local map = {}
+    for _, e in ipairs(entries or {}) do map[e.dst] = e end
+    return map
+end
+
 function app.create(win, opts, ctx)
     theme, widgets, C = ctx.theme, ctx.widgets, ctx.theme.C
     local fabric = ctx.fabric
+    local hash = ctx.hash
+    local update = ctx.update
+    local storage = ctx.storage
 
     local self = {
         sections = {},
@@ -210,6 +274,9 @@ function app.create(win, opts, ctx)
             idx = 0,
             total = 0,
             updated = 0,
+            skipped = 0,
+            downloaded = 0,
+            freed = 0,
         },
     }
 
@@ -370,11 +437,21 @@ function app.create(win, opts, ctx)
 
     local function markDirty() self.dirty = true end
 
+    --- Drop any staged download. Safe whenever no commit is in progress
+    --- (commit is synchronous, so nothing is ever pending then).
+    local function cleanStaging()
+        if update and type(update.clean) == "function" then
+            pcall(update.clean, UPDATE_BASE)
+        end
+    end
+
     local function failUpd(msg)
+        cleanStaging()
         self.upd.state = "error"
         self.upd.msg = msg
         self.pending = nil
         self.deadline = nil
+        self.upd.files = nil
         markDirty()
     end
 
@@ -388,6 +465,28 @@ function app.create(win, opts, ctx)
 
     local function localVersion()
         return firstLine(readFile(LOCAL_VERSION))
+    end
+
+    local function localState()
+        local data = readFile(STATE_PATH)
+        if not data then return nil end
+        local parsed = parseManifest(data)
+        return parsed
+    end
+
+    --- Components already on this computer. A missing state file means a
+    --- pre-Phase-3 install, which had every file.
+    local function installedComponents(state)
+        if not state or not state.entries or #state.entries == 0 then return nil end
+        local set = {}
+        for _, e in ipairs(state.entries) do set[e.comp] = true end
+        return set
+    end
+
+    local function fileSize(p)
+        local ok, n = pcall(fs.getSize, p)
+        if ok and type(n) == "number" then return n end
+        return nil
     end
 
     --- Kick off one non-blocking request. The answer arrives in self:feed.
@@ -420,81 +519,223 @@ function app.create(win, opts, ctx)
         markDirty()
     end
 
-    --- All files handled: record the new version and report.
-    local function finishInstall()
-        local remote = self.upd.remote or "unknown"
-        local wok, werr = writeFile(LOCAL_VERSION, remote .. "\n")
+    local function selectedManifest()
+        local m = self.upd.manifest
+        local list = self.upd.selected or {}
+        if not m then return nil end
+        return manifestBody(m.version, list)
+    end
+
+    local function writeState()
+        local body = selectedManifest()
+        if not body then return false, "no manifest was read" end
+        return writeFile(STATE_PATH, body)
+    end
+
+    local function reportDone(changed)
+        local version = (self.upd.manifest and self.upd.manifest.version) or "unknown"
         self.upd.state = "done"
-        if not wok then
-            self.upd.msg = ("Files updated, but %s could not be saved: %s")
-                :format(LOCAL_VERSION, tostring(werr))
-        elseif self.upd.updated > 0 then
-            self.upd.msg = ("Updated %d of %d files to version %s. Reboot to finish.")
-                :format(self.upd.updated, self.upd.total, remote)
+        if changed > 0 then
+            self.upd.msg = ("Updated %d file%s to version %s (%s downloaded). Reboot to finish.")
+                :format(changed, changed == 1 and "" or "s", version,
+                    fmtBytes(self.upd.downloaded))
         else
             self.upd.msg = ("Already current: all %d files match version %s.")
-                :format(self.upd.total, remote)
+                :format(#(self.upd.selected or {}), version)
         end
         self.upd.files = nil
         self.upd.idx = 0
         markDirty()
     end
 
-    local function nextFile()
-        local list = self.upd.files or {}
-        local i = self.upd.idx + 1
-        if i > #list then return finishInstall() end
-        self.upd.idx = i
-        local entry = list[i]
-        self.upd.msg = ("Installing %d/%d: %s"):format(i, #list, entry.src)
-        markDirty()
-        fetch(BASE .. "/" .. entry.src, "file", { dst = entry.dst })
-    end
+    local nextDownload
 
-    --- One downloaded file: check it (never run it), then swap it in only
-    --- when its bytes actually differ from what is on disk.
+    --- One downloaded file: verify size, SHA-256 and (for Lua) that it
+    --- compiles, then write it to the staging tree. Nothing live is touched.
     local function onFile(p, body)
-        local dst = p.dst
-        if dst:match("%.lua$") then
-            local fn, err = load(body, "@" .. dst)
+        local e = p.entry
+        if not e then return failUpd("Internal error: a download has no entry.") end
+        if type(hash) ~= "table" or type(hash.sha256) ~= "function" then
+            return failUpd("The SHA-256 module is missing; the update was not applied.")
+        end
+        if #body ~= e.size then
+            return failUpd(("Bad download: %s is %d bytes, expected %d. Nothing was changed.")
+                :format(shortUrl(p.url), #body, e.size))
+        end
+        local digest = hash.sha256(body)
+        if digest ~= e.hash then
+            return failUpd(("Bad download: %s has the wrong SHA-256. Nothing was changed.")
+                :format(shortUrl(p.url)))
+        end
+        if e.dst:match("%.lua$") then
+            local fn, err = load(body, "@" .. e.dst)
             if not fn then
                 return failUpd(("Bad download: %s does not compile (%s). Nothing was changed.")
                     :format(shortUrl(p.url), tostring(err)))
             end
-        elseif firstLine(body) == nil then
-            return failUpd("Bad download: " .. shortUrl(p.url)
-                .. " came back empty. Nothing was changed.")
         end
-        if readFile(dst) ~= body then
-            local wok, werr = writeFile(dst, body)
-            if not wok then
-                return failUpd("Cannot write " .. dst .. ": " .. tostring(werr))
-            end
-            self.upd.updated = self.upd.updated + 1
+        if not update or type(update.stage) ~= "function" then
+            return failUpd("The update helper is missing; the update was not applied.")
         end
-        nextFile()
+        local staged = update.stage(UPDATE_BASE, e.dst)
+        if not staged then return failUpd("Cannot stage " .. e.dst) end
+        local wok, werr = writeFile(staged, body)
+        if not wok then
+            return failUpd("Cannot write " .. staged .. ": " .. tostring(werr))
+        end
+        self.upd.updated = self.upd.updated + 1
+        self.upd.downloaded = self.upd.downloaded + #body
+        nextDownload()
     end
 
-    --- The file list from the repository: "<source> <destination>" per
-    --- line, # comments (the same pairs install.lua works from).
-    local function onManifest(body)
-        local list = {}
-        for line in body:gmatch("[^\r\n]+") do
-            local s = line:match("^%s*(.-)%s*$")
-            if s ~= "" and s:sub(1, 1) ~= "#" then
-                local src, dst = s:match("^(%S+)%s+(%S+)$")
-                if not src or not safeSrc(src) or not safeDst(dst) then
-                    return failUpd("GitHub's file list has a bad line: " .. s)
-                end
-                list[#list + 1] = { src = src, dst = dst }
+    --- All staged files are verified: commit them as one transaction and
+    --- record the manifest that describes exactly this installation.
+    local function applyUpdate()
+        local list = self.upd.files or {}
+        local stateBody = selectedManifest()
+        if not stateBody then return failUpd("No file list to apply.") end
+        local stateStaged = update.stage(UPDATE_BASE, STATE_PATH)
+        local okW, errW = writeFile(stateStaged, stateBody)
+        if not okW then
+            return failUpd("Cannot stage the installation record: " .. tostring(errW))
+        end
+
+        local oldBytes, newBytes = 0, 0
+        local commit = {}
+        for _, e in ipairs(list) do
+            oldBytes = oldBytes + (fileSize(e.dst) or 0)
+            newBytes = newBytes + e.size
+            commit[#commit + 1] = { dst = e.dst }
+        end
+        commit[#commit + 1] = { dst = STATE_PATH }
+        self.upd.freed = math.max(0, oldBytes - newBytes)
+
+        local okC, whyC = update.commit(UPDATE_BASE, commit)
+        if not okC then
+            self.pending = nil
+            self.deadline = nil
+            self.upd.state = "error"
+            self.upd.msg = "Could not apply the update; the previous files were restored: "
+                .. tostring(whyC)
+            self.upd.files = nil
+            markDirty()
+            return
+        end
+
+        local versionChanged = false
+        for _, e in ipairs(list) do
+            if e.dst == LOCAL_VERSION then versionChanged = true end
+        end
+        local version = (self.upd.manifest and self.upd.manifest.version) or "unknown"
+        if not versionChanged and localVersion() ~= version then
+            local vok, verr = writeFile(LOCAL_VERSION, version .. "\n")
+            if not vok then
+                self.upd.state = "error"
+                self.upd.msg = "Files updated, but " .. LOCAL_VERSION
+                    .. " could not be saved: " .. tostring(verr)
+                self.upd.files = nil
+                markDirty()
+                return
             end
         end
-        if #list == 0 then return failUpd("GitHub's file list is empty.") end
-        self.upd.files = list
-        self.upd.total = #list
+        reportDone(#list)
+    end
+
+    function nextDownload()
+        local list = self.upd.files or {}
+        local i = self.upd.idx + 1
+        if i > #list then return applyUpdate() end
+        self.upd.idx = i
+        local entry = list[i]
+        self.upd.msg = ("Downloading %d/%d: %s"):format(i, #list, entry.dst)
+        markDirty()
+        fetch(BASE .. "/" .. entry.src, "file", { entry = entry })
+    end
+
+    --- The manifest from the repository: decide which files changed before
+    --- downloading anything. A local state file makes an unchanged file a
+    --- one-line comparison; without one, the local bytes are hashed.
+    local function onManifest(body)
+        local manifest, why = parseManifest(body)
+        if not manifest then
+            return failUpd("GitHub's file manifest is invalid: " .. tostring(why))
+        end
+        if self.upd.remote and manifest.version ~= self.upd.remote then
+            return failUpd(("GitHub's manifest is for version %s but its version marker says %s.")
+                :format(manifest.version, self.upd.remote))
+        end
+        local state = localState()
+        local comps = installedComponents(state)
+        local selected = {}
+        for _, e in ipairs(manifest.entries) do
+            if not comps or comps[e.comp] then selected[#selected + 1] = e end
+        end
+        if #selected == 0 then
+            return failUpd("GitHub's file manifest has nothing for the installed components.")
+        end
+        local known = entryMap(state and state.entries)
+        local need, needBytes = {}, 0
+        local skipped = 0
+        for _, e in ipairs(selected) do
+            local same = false
+            if fileSize(e.dst) == e.size then
+                local old = known[e.dst]
+                if old and old.size == e.size and old.hash == e.hash
+                    and e.dst ~= LOCAL_VERSION then
+                    same = true
+                else
+                    -- The version marker is small and is the one file a
+                    -- person or an interrupted write can plausibly change
+                    -- without the state manifest noticing.
+                    local data = readFile(e.dst)
+                    if data and #data == e.size and hash and hash.sha256
+                        and hash.sha256(data) == e.hash then
+                        same = true
+                    end
+                end
+            end
+            if same then
+                skipped = skipped + 1
+            else
+                need[#need + 1] = e
+                needBytes = needBytes + e.size
+            end
+        end
+
+        self.upd.manifest = manifest
+        self.upd.selected = selected
+        self.upd.files = need
+        self.upd.total = #manifest.entries
         self.upd.idx = 0
         self.upd.updated = 0
-        nextFile()
+        self.upd.skipped = skipped
+        self.upd.downloaded = 0
+        self.upd.freed = 0
+
+        local free = safe(fs.getFreeSpace, "/")
+        if free and free < needBytes + MIN_FREE then
+            if storage and storage.capCache then
+                storage.capCache("/ccwin/cache", storage.CACHE_MAX)
+            end
+            free = safe(fs.getFreeSpace, "/")
+            if free and free < needBytes + MIN_FREE then
+                return failUpd(("Not enough disk space: need %s free, have %s. Free some space or install the core components.")
+                    :format(fmtBytes(needBytes + MIN_FREE), fmtBytes(free)))
+            end
+        end
+
+        if #need == 0 then
+            local okS, errS = writeState()
+            if not okS then
+                return failUpd("Cannot record the installation: " .. tostring(errS))
+            end
+            local version = manifest.version
+            if localVersion() ~= version then
+                writeFile(LOCAL_VERSION, version .. "\n")
+            end
+            return reportDone(0)
+        end
+        nextDownload()
     end
 
     --- The version check: local marker vs. the one in the repository.
@@ -528,23 +769,32 @@ function app.create(win, opts, ctx)
 
     local function startInstall()
         if self.pending then return end
+        cleanStaging()
         self.upd.state = "installing"
-        self.upd.msg = "Fetching the file list..."
+        self.upd.msg = "Reading the file manifest..."
         self.upd.idx = 0
         self.upd.updated = 0
+        self.upd.skipped = 0
+        self.upd.downloaded = 0
+        self.upd.freed = 0
+        self.upd.files = nil
+        self.upd.selected = nil
+        self.upd.manifest = nil
         fetch(MANIFEST_URL, "manifest")
     end
 
-    --- Abort a check or an install in flight. Files already written stay
-    --- as they are: /ccwin/version is only ever recorded by
-    --- finishInstall, so the next check simply offers the update again.
+    --- Abort a check or an install in flight. Nothing live has been touched:
+    --- staging is discarded and /ccwin/version is unchanged.
     local function cancelUpd()
         if self.tick then pcall(os.cancelTimer, self.tick); self.tick = nil end
         self.pending = nil
         self.deadline = nil
+        cleanStaging()
         self.upd.state = "idle"
         self.upd.msg = "Update cancelled."
         self.upd.files = nil
+        self.upd.selected = nil
+        self.upd.manifest = nil
         self.upd.idx = 0
         markDirty()
     end
@@ -805,9 +1055,10 @@ function app.create(win, opts, ctx)
         self.timerId = nil
         if self.tick then pcall(os.cancelTimer, self.tick) end
         self.tick = nil
-        -- A half-finished update simply stops here: /ccwin/version is only
-        -- written by finishInstall, so the next check offers it again.
+        -- A half-finished update simply stops here: only staging was
+        -- touched, so discarding it leaves the installed OS untouched.
         self.pending = nil
+        cleanStaging()
         if close then close(self) end
     end
 

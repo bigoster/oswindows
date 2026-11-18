@@ -10,6 +10,7 @@
 local storage = {}
 
 storage.LOG_MAX = 32768
+storage.CACHE_MAX = 131072
 
 --- Size of a file, or nil when it is missing or unreadable.
 function storage.size(path)
@@ -120,6 +121,91 @@ function storage.append(path, data, maxBytes)
     local out = old .. data
     if #out > maxBytes then out = out:sub(#out - maxBytes + 1) end
     return storage.write(path, out, { backup = false })
+end
+
+--- Cut a log file down to its newest `maxBytes` bytes. Unlike append(),
+-- this also trims a file someone else wrote (or an older build grew).
+function storage.trim(path, maxBytes)
+    local n = storage.size(path)
+    if not n then return false end
+    maxBytes = maxBytes or storage.LOG_MAX
+    if n <= maxBytes then return false end
+    local data = storage.read(path, n)
+    if not data then return false end
+    return storage.write(path, data:sub(#data - maxBytes + 1), { backup = false })
+end
+
+--- Every file under `dir`, as { path, size } records.
+function storage.listFiles(dir, out)
+    out = out or {}
+    if not storage.isDir(dir) then return out end
+    local ok, names = pcall(fs.list, dir)
+    if not ok or type(names) ~= "table" then return out end
+    for _, name in ipairs(names) do
+        local p = dir .. "/" .. name
+        if storage.isDir(p) then
+            storage.listFiles(p, out)
+        else
+            out[#out + 1] = { path = p, size = storage.size(p) or 0 }
+        end
+    end
+    return out
+end
+
+--- Total bytes of a directory tree.
+function storage.treeSize(dir)
+    local total = 0
+    for _, f in ipairs(storage.listFiles(dir)) do total = total + f.size end
+    return total
+end
+
+--- Keep a cache directory at or below `maxBytes`, deleting the oldest
+-- files first. CraftOS exposes fs.getLastModified; when it does not, the
+-- directory order is used instead. Returns the number of bytes freed.
+function storage.capCache(dir, maxBytes)
+    maxBytes = maxBytes or storage.CACHE_MAX
+    local files = storage.listFiles(dir)
+    local total = 0
+    for _, f in ipairs(files) do total = total + f.size end
+    if total <= maxBytes then return 0 end
+    if type(fs.getLastModified) == "function" then
+        table.sort(files, function(a, b)
+            local oka, ta = pcall(fs.getLastModified, a.path)
+            local okb, tb = pcall(fs.getLastModified, b.path)
+            if oka and okb and ta ~= tb then return ta < tb end
+            return a.path < b.path
+        end)
+    end
+    local freed = 0
+    for _, f in ipairs(files) do
+        if total <= maxBytes then break end
+        if storage.delete(f.path) then
+            total = total - f.size
+            freed = freed + f.size
+        end
+    end
+    return freed
+end
+
+--- Housekeeping at boot: restore settings from their backup if a power cut
+-- lost the live file, trim the log and any cache, and drop stale temp files.
+-- `opts` = { base, settings, log, cache, cacheMax }.
+function storage.maintain(opts)
+    opts = opts or {}
+    local settings = opts.settings
+    if settings then
+        if not storage.exists(settings) and storage.exists(settings .. ".bak") then
+            copyFile(settings .. ".bak", settings)
+        end
+        pcall(fs.delete, settings .. ".new")
+    end
+    if opts.log then storage.trim(opts.log, opts.logMax or storage.LOG_MAX) end
+    if opts.cache then storage.capCache(opts.cache, opts.cacheMax or storage.CACHE_MAX) end
+    if opts.base then
+        pcall(fs.delete, opts.base .. "/.installed-manifest.new")
+        pcall(fs.delete, opts.base .. "/version.new")
+    end
+    return true
 end
 
 --- If `path` vanished in the middle of a write, restore its backup.

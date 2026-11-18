@@ -38,6 +38,16 @@ local SETTINGS_MAX = 65536
 local crashedLastBoot = storage.exists(BOOT_MARKER)
 storage.write(BOOT_MARKER, tostring(os.time()), { backup = false })
 
+-- Housekeeping: an interrupted settings write is restored from its .bak,
+-- the fault log and the cache are kept under their caps, and stale temp
+-- files from an interrupted update are dropped before anything reads them.
+storage.maintain {
+    base = BASE,
+    settings = SETTINGS_PATH,
+    log = LOG_PATH,
+    cache = path("cache"),
+}
+
 local lastFault, sameFaults = nil, 0
 
 --- Record a fault without flooding the disk. Repeats are written every
@@ -62,6 +72,15 @@ local function loadModule(rel)
     if ok then return mod end
     logFault("module " .. rel, mod)
     error(mod, 0)
+end
+
+--- A component install may legitimately omit an app. Missing files are
+--- skipped silently; a file that exists but fails to load is still logged.
+local function loadOptionalModule(rel)
+    if not storage.exists(path(rel)) then return nil end
+    local ok, mod = pcall(loadModule, rel)
+    if ok then return mod end
+    return nil
 end
 
 ----------------------------------------------------------------------
@@ -198,6 +217,8 @@ local desktop = loadModule("core/desktop.lua")
 local fabric = loadModule("core/fabric.lua")
 local programs = loadModule("core/programs.lua")
 local picture = loadModule("core/picture.lua")
+local hash = loadModule("core/hash.lua")
+local update = loadModule("core/update.lua")
 pcall(loading.step, "Loading system", 0.20)
 
 -- The 162 KB PNG/JPEG/WebP decoder is only needed when a raster wallpaper
@@ -228,9 +249,9 @@ end
 local APP_LIST = { "console", "explorer", "editor", "paint", "settings", "system", "browser" }
 local apps = {}
 for i, id in ipairs(APP_LIST) do
-    local app = loadModule("apps/" .. id .. ".lua")
-    apps[app.id or id] = app
-    pcall(loading.step, "Loading " .. tostring(app.name or id),
+    local app = loadOptionalModule("apps/" .. id .. ".lua")
+    if app then apps[app.id or id] = app end
+    pcall(loading.step, "Loading " .. tostring(app and app.name or id),
         0.22 + 0.58 * i / #APP_LIST)
 end
 pcall(loading.step, "Preparing desktop", 0.82)
@@ -352,6 +373,8 @@ local function boot()
         storage = storage,
         picture = picture,
         image = image,
+        hash = hash,
+        update = update,
     }
 
     desktop.attach {
@@ -384,6 +407,8 @@ local function boot()
         storage = storage,
         picture = picture,
         image = image,
+        hash = hash,
+        update = update,
         safeMode = crashedLastBoot,
     }
 
