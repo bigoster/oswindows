@@ -66,13 +66,14 @@ the exit status.
     ├── core/
     │   ├── font.lua      (generated glyph atlas — do not edit by hand)
     │   ├── gfx.lua       (framebuffer, clipping, DC drawing primitives)
+    │   ├── loading.lua   (boot splash and progress panel)
     │   ├── theme.lua     (light/dark palettes, paint palette, HSV helper)
     │   ├── icons.lua     (pixel icon definitions)
     │   ├── widgets.lua   (buttons, toggles, text fields, scrollbars, ...)
     │   ├── dialogs.lua   (message boxes, file pickers)
     │   ├── menu.lua      (right-click context menus and submenus)
-    │   ├── wm.lua        (window list, z-order, focus, drag/resize)
-    │   ├── desktop.lua   (shortcuts, wallpaper, taskbar, start menu, clock)
+    │   ├── wm.lua        (window list, z-order, cached surfaces, damage render)
+    │   ├── desktop.lua   (shortcuts, wallpaper, taskbar, clock, background cache)
     │   ├── backdrop.lua  (wallpaper renderers, picture loading)
     │   ├── picture.lua   (NFP / CWP1 / CWP2 picture codec)
     │   ├── storage.lua   (atomic writes, size caps, error log)
@@ -163,7 +164,12 @@ exactly like re-running the installer.
   bar or taskbar button (Minimise / Maximize / Close)
 - Icon views: Large / Medium / Small icons (View menu), plus Sort by Name
 - Taskbar with Start menu, running-window buttons and a live clock
-  (12/24-hour, optional seconds)
+  (12/24-hour, optional seconds); the power/fabric link is sampled every
+  5 seconds instead of every tick
+- **Boot splash**: a themed progress panel appears as soon as graphics mode
+  and the palette are ready, and steps through modules, apps, the wallpaper
+  and the first desktop frame — a photo wallpaper no longer looks like a
+  crashed boot while it decodes
 - Light and Dark themes, applied instantly to the whole palette
 
 **Window manager**
@@ -176,6 +182,11 @@ exactly like re-running the installer.
 - Drag and move redraws are coalesced to one frame per 0.03 s, so a fast
   mouse cannot queue up a redraw storm; clicks, keys and releases still
   render immediately
+- **Cached window surfaces + damage rendering**: each window's pixels are
+  captured after it draws, so moving or resizing another window, or
+  repainting the clock, does not re-run its `draw` callback. Only the
+  damaged rectangle is recomposited (the taskbar tray is about 96 px),
+  with a full redraw kept as the correctness fallback
 
 **Reliability**
 
@@ -197,7 +208,7 @@ exactly like re-running the installer.
   repaired in memory with a warning instead of crashing the boot
 - **Small install**: CWP2 pictures, runtime picture caches and an
   on-demand PNG/JPEG/WebP decoder keep the whole `ccwin` tree at about
-  550 KB, with no change to the app contract
+  565 KB, with no change to the app contract
 
 **Apps**
 
@@ -366,6 +377,10 @@ The Console is the most involved piece: it hosts the unmodified
 - `startup.lua` sets `_CCWIN_RUNNING` before doing anything else. Console shells
   re-run `/rom/startup.lua` (because they have no parent shell), which would
   otherwise boot the OS a second time — the guard makes that a no-op.
+- The boot splash (`core/loading.lua`) uses only `core/gfx.lua` and the
+  palette, so it can draw before the rest of the OS is loaded. Its steps are
+  `pcall`-guarded; if the splash itself fails, boot continues silently.
+  The boot marker is still removed only after the first real desktop frame.
 - Power → Shutdown from the Start menu saves settings, restores the text
   palette, leaves graphics mode and returns to the CraftOS shell.
 
@@ -394,6 +409,10 @@ scripted mouse/keyboard events. It asserts boot sanity, opens every app from its
 desktop icon, runs a command in the console shell, switches theme, powers off
 and verifies that `settings.cfg` was written and that graphics mode was left
 cleanly — then reboots into the saved settings and checks they were read back.
+The same run checks the boot splash really painted and reached the desktop,
+that a clock tick repaints only the tray without calling an app's `draw`, and
+that dragging a window reuses its cached surface and carries its pixels with
+it.
 
 `run5` covers the desktop shell itself: the seeded `/desktop/*.lnk` files and
 their positions, the three context menus and their submenus, Escape dismissal,

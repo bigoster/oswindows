@@ -48,6 +48,7 @@ local FILES = {
     { "ccwin/core/gfx.lua",      "/ccwin/core/gfx.lua" },
     { "ccwin/core/icons.lua",    "/ccwin/core/icons.lua" },
     { "ccwin/core/image.lua",    "/ccwin/core/image.lua" },
+    { "ccwin/core/loading.lua",  "/ccwin/core/loading.lua" },
     { "ccwin/core/menu.lua",     "/ccwin/core/menu.lua" },
     { "ccwin/core/picture.lua",  "/ccwin/core/picture.lua" },
     { "ccwin/core/programs.lua", "/ccwin/core/programs.lua" },

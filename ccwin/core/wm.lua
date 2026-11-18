@@ -9,12 +9,38 @@ local apps, state, desktop, fabric, programs
 local storage, picture, image
 local rootDC
 
+local rep, sub, char = string.rep, string.sub, string.char
+local min, max, floor = math.min, math.max, math.floor
+
 local windows = {}
 local focused = nil
 local drag = nil
 local pressed = nil
 local nextId = 1
 local cascade = 0
+
+-- Rectangles that need recompositing without rebuilding the whole scene.
+-- The clock tray is the main user: once a second it changes two dozen
+-- pixels, and a full wallpaper + icons + window redraw for that was both
+-- wasteful and visible as a stutter.
+local damage = {}
+
+--- Ask for a small area to be recomposited on the next frame.
+function wm.markRect(x, y, w, h)
+    if w == nil or h == nil or w <= 0 or h <= 0 then return end
+    damage[#damage + 1] = { math.floor(x or 0), math.floor(y or 0),
+        math.floor(w), math.floor(h) }
+end
+
+function wm.hasDamage()
+    return #damage > 0
+end
+
+--- Force every window to repaint on the next frame (theme changes, and
+--- anything else that alters colours outside an app's own draw).
+function wm.invalidateSurfaces()
+    for i = 1, #windows do windows[i].surfaceDirty = true end
+end
 
 local TITLE_H = 13
 local BORDER = 1
@@ -70,7 +96,9 @@ local function layout(win)
     local dc = win.dc
     dc.ox, dc.oy = win.content.x, win.content.y
     dc.w, dc.h = win.content.w, win.content.h
-    if win.instance and win.instance.resize and (oldW ~= dc.w or oldH ~= dc.h) then
+    local resized = oldW ~= dc.w or oldH ~= dc.h
+    if resized then win.surfaceDirty = true end
+    if win.instance and win.instance.resize and resized then
         wm.call(win, "resize", dc.w, dc.h)
     end
 end
@@ -239,6 +267,7 @@ end
 function wm.setTitle(win, title)
     if win.title ~= title then
         win.title = title
+        win.surfaceDirty = true
         wm.dirty = true
     end
 end
@@ -248,6 +277,7 @@ function wm.crash(win, err)
     win.crashed = tostring(err)
     win.instance = nil
     win.title = (win.app and win.app.name or "Program") .. " (crashed)"
+    win.surfaceDirty = true
     wm.dirty = true
 end
 
@@ -255,20 +285,26 @@ function wm.call(win, method, ...)
     if not win or not win.instance then return end
     local fn = win.instance[method]
     if not fn then return end
+    local drawing = (method == "draw")
     local ok, err = pcall(fn, win.instance, ...)
     if not ok then wm.crash(win, err) end
     -- Applications mark their own window dirty (either `win.dirty` or
-    -- `self.dirty`); make that reach the shell. `wm.crash` drops the
-    -- instance, so re-check before touching it: indexing the cleared
-    -- instance here was `'instance' (a nil value)`, and because this runs
-    -- inside the event loop the whole OS went down with it.
+    -- `self.dirty`); make that reach the shell. A flag raised *during*
+    -- draw is ignored: that frame is already being painted, and asking
+    -- for another one would repaint the same window forever.
     if win.dirty then
         win.dirty = nil
-        wm.dirty = true
+        if not drawing then
+            win.surfaceDirty = true
+            wm.dirty = true
+        end
     end
     if win.instance and win.instance.dirty then
         win.instance.dirty = nil
-        wm.dirty = true
+        if not drawing then
+            win.surfaceDirty = true
+            wm.dirty = true
+        end
     end
 end
 
@@ -415,16 +451,175 @@ function wm.drawWindow(win)
     gfx.popClip()
 end
 
+--------------------------------------------------------------------------
+-- surfaces and damage
+--
+-- A window is drawn once into the shared back buffer, then copied into a
+-- private rectangle. Moving it or repainting the clock can splice those
+-- cached rows back in without calling app.draw again. Surfaces are
+-- refreshed in z-order during a full render, before any window above
+-- them is drawn, so an occluded window keeps its own pixels rather than
+-- a snapshot of whatever covered it.
+--------------------------------------------------------------------------
+
+local function surfaceFits(win)
+    local s = win.surface
+    return s ~= nil and s.valid == true and s.w == win.w and s.h == win.h
+end
+
+local function captureWindow(win)
+    local W, H = gfx.size()
+    local w, h = win.w, win.h
+    if w < 1 then w = 1 end
+    if h < 1 then h = 1 end
+    local s = win.surface
+    if not s or s.w ~= w or s.h ~= h then
+        s = { w = w, h = h, rows = {}, valid = false }
+        win.surface = s
+    end
+
+    -- Parts of a window dragged past the edge are stored as zeroes so
+    -- blitting it back at a negative/overflowing position still lines up.
+    -- An edge-clipped surface has to be redrawn when it moves back inside:
+    -- the pixels that were off-screen were never painted, and blitting
+    -- those zeroes would punch a black hole in the window.
+    local left = max(0, -win.x)
+    local right = max(0, win.x + w - W)
+    local vx0, vx1 = max(0, win.x), min(W, win.x + w)
+    local clipped = left > 0 or right > 0
+    for row = 0, h - 1 do
+        local sy = win.y + row
+        if sy >= 0 and sy < H and vx1 > vx0 then
+            local line = gfx.row(sy + 1)
+            s.rows[row + 1] = rep(char(0), left)
+                .. sub(line, vx0 + 1, vx1)
+                .. rep(char(0), right)
+        else
+            s.rows[row + 1] = rep(char(0), w)
+            clipped = true
+        end
+    end
+    s.clipped = clipped
+    s.valid = true
+    win.surfaceDirty = false
+    win.surfaceActive = (win == focused)
+end
+
+local function blitWindow(win)
+    local s = win.surface
+    if not surfaceFits(win) then return false end
+    for row = 1, s.h do
+        gfx.blit(win.x, win.y + row - 1, s.rows[row])
+    end
+    return true
+end
+
+local function overlaps(ax, ay, aw, ah, bx, by, bw, bh)
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+end
+
+local function clampRect(x, y, w, h)
+    local W, H = gfx.size()
+    if x < 0 then w = w + x; x = 0 end
+    if y < 0 then h = h + y; y = 0 end
+    if x + w > W then w = W - x end
+    if y + h > H then h = H - y end
+    if w < 1 or h < 1 then return nil end
+    return x, y, w, h
+end
+
+--- Repaint only `x,y,w,h`: cached wallpaper, then window surfaces in
+--- z-order, then the taskbar when the rectangle reaches it.
+local function partialRender(x, y, w, h)
+    local _, H = gfx.size()
+    x, y, w, h = clampRect(x, y, w, h)
+    if not x then return false end
+
+    gfx.resetClip()
+    gfx.setClip(x, y, w, h)
+    if desktop.restoreRect then desktop.restoreRect(x, y, w, h) end
+    for i = 1, #windows do
+        local win = windows[i]
+        if win.state ~= "min" and surfaceFits(win)
+            and overlaps(x, y, w, h, win.x, win.y, win.w, win.h) then
+            blitWindow(win)
+        end
+    end
+    if y + h > H - wm.TASKBAR_H then
+        desktop.drawFront(rootDC)
+    end
+    gfx.resetClip()
+    return true
+end
+
 function wm.render()
     local W, H = gfx.size()
     if rootDC.w ~= W or rootDC.h ~= H then
         rootDC = gfx.newDC(0, 0, W, H)
     end
     gfx.resetClip()
+
+    -- Small updates (the clock, a window move) reuse every cached surface.
+    -- Fall back to a full pass when something is invalid, a menu/overlay is
+    -- open, or the damage just is not worth tracking.
+    if not wm.dirty and #damage > 0 then
+        local can = desktop and desktop.restoreRect ~= nil
+        if can and menu and menu.isOpen and menu.isOpen() then can = false end
+        if can and desktop.canPartial and not desktop.canPartial() then can = false end
+        if can then
+            for i = 1, #windows do
+                local win = windows[i]
+                if win.state ~= "min"
+                    and (win.surfaceDirty or not surfaceFits(win)) then
+                    can = false
+                    break
+                end
+            end
+        end
+        if can then
+            -- One bounding box is cheaper than several clipped passes and
+            -- still excludes most of the screen for the usual tray update.
+            local x0, y0, x1, y1
+            for i = 1, #damage do
+                local r = damage[i]
+                local rx0, ry0 = r[1], r[2]
+                local rx1, ry1 = r[1] + r[3], r[2] + r[4]
+                if not x0 or rx0 < x0 then x0 = rx0 end
+                if not y0 or ry0 < y0 then y0 = ry0 end
+                if not x1 or rx1 > x1 then x1 = rx1 end
+                if not y1 or ry1 > y1 then y1 = ry1 end
+            end
+            damage = {}
+            if x0 and partialRender(x0, y0, x1 - x0, y1 - y0) then
+                gfx.present()
+                wm.dirty = false
+                return
+            end
+            -- partialRender found nothing to do (rect off-screen): continue
+            -- into the full pass so a damaged frame is never dropped.
+        end
+    end
+
+    damage = {}
     if desktop then desktop.drawBack(rootDC) end
+    if desktop and desktop.captureBack then desktop.captureBack() end
     for i = 1, #windows do
         local win = windows[i]
-        if win.state ~= "min" then wm.drawWindow(win) end
+        if win.state ~= "min" then
+            local active = (win == focused)
+            if win.surfaceDirty or not surfaceFits(win)
+                or win.surfaceActive ~= active then
+                local wasCrashed = win.crashed ~= nil
+                wm.drawWindow(win)
+                -- A crash can happen halfway through draw; paint the crash
+                -- panel before capturing, or its half-drawn pixels would
+                -- become the cached surface.
+                if not wasCrashed and win.crashed then wm.drawWindow(win) end
+                captureWindow(win)
+            else
+                blitWindow(win)
+            end
+        end
     end
     if desktop then desktop.drawFront(rootDC) end
     -- Context menus float above everything, including the taskbar.
@@ -568,6 +763,7 @@ local function onMouseDrag(x, y, button)
     state.pointer.x, state.pointer.y = x, y
     if drag then
         local win = drag.win
+        local oldX, oldY, oldW, oldH = win.x, win.y, win.w, win.h
         if drag.mode == "move" then
             local _, _, aw, ah = wm.desktopArea()
             win.x = x - drag.offX
@@ -582,7 +778,14 @@ local function onMouseDrag(x, y, button)
             clampSizes(win)
         end
         layout(win)
-        wm.dirty = true
+        -- Only the old and new window rectangles changed. The window's
+        -- cached surface is position-independent, so a move costs a
+        -- background restore and a few row blits, not another app.draw.
+        -- A surface captured while part of the window was off-screen did
+        -- not see those pixels, so it must be painted again instead.
+        if win.surface and win.surface.clipped then win.surfaceDirty = true end
+        wm.markRect(oldX, oldY, oldW, oldH)
+        wm.markRect(win.x, win.y, win.w, win.h)
         return
     end
     if desktop and desktop.mouseDrag(x, y, button) then return end

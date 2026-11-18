@@ -54,6 +54,16 @@ local function logFault(where, err)
         storage.LOG_MAX)
 end
 
+--- Load a core/app module through the fault log. The modules load before
+--- `boot()` so the splash can appear between them, which puts them outside
+--- its pcall; a broken file must still leave a line in last-error.log.
+local function loadModule(rel)
+    local ok, mod = pcall(dofile, path(rel))
+    if ok then return mod end
+    logFault("module " .. rel, mod)
+    error(mod, 0)
+end
+
 ----------------------------------------------------------------------
 -- settings (schema v2: bounded read, validated values, migrations)
 ----------------------------------------------------------------------
@@ -163,19 +173,32 @@ end
 -- modules
 ----------------------------------------------------------------------
 
-local font = dofile(path("core/font.lua"))
-local gfx = dofile(path("core/gfx.lua"))
-local theme = dofile(path("core/theme.lua"))
-local icons = dofile(path("core/icons.lua"))
-local widgets = dofile(path("core/widgets.lua"))
-local dialogs = dofile(path("core/dialogs.lua"))
-local backdrop = dofile(path("core/backdrop.lua"))
-local menu = dofile(path("core/menu.lua"))
-local wm = dofile(path("core/wm.lua"))
-local desktop = dofile(path("core/desktop.lua"))
-local fabric = dofile(path("core/fabric.lua"))
-local programs = dofile(path("core/programs.lua"))
-local picture = dofile(path("core/picture.lua"))
+local font = loadModule("core/font.lua")
+local gfx = loadModule("core/gfx.lua")
+gfx.attach(font)
+gfx.init()
+
+-- The splash needs a palette, and the desktop needs one either way.
+-- Installing it here also means the first visible frame is already in
+-- the user's theme, not the stock CC colours.
+local theme = loadModule("core/theme.lua")
+pcall(theme.install, settings.theme, settings.accentColour, settings.wallpaperColour)
+
+local loading = loadModule("core/loading.lua")
+pcall(loading.begin, gfx, theme)
+pcall(loading.step, "Loading system", 0.08)
+
+local icons = loadModule("core/icons.lua")
+local widgets = loadModule("core/widgets.lua")
+local dialogs = loadModule("core/dialogs.lua")
+local backdrop = loadModule("core/backdrop.lua")
+local menu = loadModule("core/menu.lua")
+local wm = loadModule("core/wm.lua")
+local desktop = loadModule("core/desktop.lua")
+local fabric = loadModule("core/fabric.lua")
+local programs = loadModule("core/programs.lua")
+local picture = loadModule("core/picture.lua")
+pcall(loading.step, "Loading system", 0.20)
 
 -- The 162 KB PNG/JPEG/WebP decoder is only needed when a raster wallpaper
 -- is actually chosen, so it loads on first use behind this proxy.
@@ -204,10 +227,13 @@ end
 
 local APP_LIST = { "console", "explorer", "editor", "paint", "settings", "system", "browser" }
 local apps = {}
-for _, id in ipairs(APP_LIST) do
-    local app = dofile(path("apps/" .. id .. ".lua"))
+for i, id in ipairs(APP_LIST) do
+    local app = loadModule("apps/" .. id .. ".lua")
     apps[app.id or id] = app
+    pcall(loading.step, "Loading " .. tostring(app.name or id),
+        0.22 + 0.58 * i / #APP_LIST)
 end
+pcall(loading.step, "Preparing desktop", 0.82)
 
 ----------------------------------------------------------------------
 -- shared state
@@ -229,6 +255,7 @@ local function applySettings()
     end
     local ok2, err2 = pcall(desktop.rebuild)
     if not ok2 then logFault("desktop.rebuild", err2) end
+    wm.invalidateSurfaces()
     state.onSettingsChanged = nil
     wm.dirty = true
 end
@@ -276,9 +303,6 @@ end
 ----------------------------------------------------------------------
 
 local function boot()
-    gfx.attach(font)
-    gfx.init()
-
     -- The palette must be installed while graphics mode 2 is active.
     -- Older builds stored colours as palette indices; Settings speaks hex
     -- now, so carry the same colours over before installing the palette.
@@ -345,6 +369,7 @@ local function boot()
     }
 
     wm.setDesktop(desktop)
+    pcall(loading.step, "Loading wallpaper", 0.90)
     desktop.rebuild()
 
     -- The OS API for programs running outside a window: a program on a
@@ -375,7 +400,9 @@ local function boot()
     end
 
     desktop.updateClock()
+    pcall(loading.step, "Drawing desktop", 0.98)
     wm.render()
+    pcall(loading.finish)
 
     -- The first frame reached the screen: this boot is no longer suspect.
     storage.delete(BOOT_MARKER)
@@ -393,7 +420,7 @@ local function boot()
         _G.CCWIN_DEBUG_STATE = {
             wm = wm, desktop = desktop, apps = apps, menu = menu,
             state = state, gfx = gfx, theme = theme, native = native,
-            fabric = fabric, programs = programs,
+            fabric = fabric, programs = programs, loading = loading,
             storage = storage, picture = picture, image = image,
         }
     end
@@ -406,6 +433,7 @@ local function boot()
     local clockTimer = os.startTimer(1)
     local frameTimer
     local renderFaults = 0
+    local powerIn = 0
 
     --- Render at most once per drag burst. Immediate for every other
     --- event, so clicks and typing still echo at full speed.
@@ -414,7 +442,7 @@ local function boot()
             pcall(os.cancelTimer, frameTimer)
             frameTimer = nil
         end
-        if not wm.dirty then return true end
+        if not wm.dirty and not wm.hasDamage() then return true end
         local ok, err = pcall(wm.render)
         if ok then
             renderFaults = 0
@@ -456,11 +484,21 @@ local function boot()
                 state.tick = state.tick + 1
             elseif ev[2] == clockTimer then
                 clockTimer = os.startTimer(1)
-                local ok, err = pcall(desktop.updateClock)
+                -- The clock text is cheap, but asking CC:CE for the power
+                -- state and scanning the fabric link every single second
+                -- made the desktop hesitate on real hardware. Both only
+                -- need to be sampled periodically.
+                local checkPower = false
+                powerIn = powerIn - 1
+                if powerIn <= 0 then
+                    checkPower = true
+                    powerIn = 5
+                end
+                local ok, err = pcall(desktop.updateClock, checkPower)
                 if not ok then logFault("clock", err) end
-                -- greet fabric peers we have not met yet; a failure here
-                -- must never take the desktop down with it
-                pcall(fabric.poll)
+                if checkPower then
+                    pcall(fabric.poll)
+                end
             end
         end
 
@@ -478,7 +516,8 @@ local function boot()
                 wm.dirty = true
             end
 
-            if (name == "mouse_drag" or name == "mouse_move") and wm.dirty then
+            if (name == "mouse_drag" or name == "mouse_move")
+                and (wm.dirty or wm.hasDamage()) then
                 if not frameTimer then frameTimer = os.startTimer(0.03) end
             else
                 renderNow()

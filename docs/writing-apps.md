@@ -287,7 +287,7 @@ Every callback is optional. `x, y` are always **client-relative pixels**
 
 | Callback | Arguments | Delivered to | Notes |
 | --- | --- | --- | --- |
-| `draw` | `dc, cw, ch` | focused + background | called on every render; `cw, ch` = client size |
+| `draw` | `dc, cw, ch` | focused + background | called when this window needs repainting (new, dirty, resized, theme change), not on every frame; `cw, ch` = client size. Its pixels are cached, so moving the window reuses them |
 | `resize` | `w, h` | that window | client size changed (resize, maximize, `term_resize`) |
 | `click` | `x, y, button, double` | the window under the mouse, after focus | `button`: 1 left, 2 right, 3 middle |
 | `up` | `x, y, button` | the **focused** window | mouse button released |
@@ -308,6 +308,10 @@ convention for "I handled it", not a requirement.
 After changing anything visible, set `win.dirty = true` **or**
 `self.dirty = true`. Both work: `wm.call` checks either one after every
 callback and forwards it to the shell's render pass.
+
+A flag set **inside `draw`** is deliberately ignored: that frame is already
+being painted, and honouring it would repaint the same window forever. Raise
+the flag from an input, timer or `feed` callback instead.
 
 You never call `wm.render()` yourself.
 
@@ -737,20 +741,28 @@ Consequences you can rely on:
 
 ### The dirty flag
 
-The shell renders only when `wm.dirty` is set, and clears it after a full
-frame. Your callbacks contribute like this:
+The shell only renders when something changed, and clears the flags after
+the frame. Your callbacks contribute like this:
 
 ```
 your callback sets win.dirty / self.dirty
         ↓
-wm.call() notices it and sets wm.dirty
+wm.call() notices it, marks that window's cached surface stale
         ↓
-main loop calls wm.render() once the event is consumed
+main loop repaints that window (and only what overlaps it)
 ```
 
+The window manager caches each window as a pixel surface after `draw`, and
+the desktop caches the wallpaper and icon rows. Small changes use damage
+rectangles: a clock tick repaints the taskbar tray, and a window move splices
+the cached surface at its new position without calling `draw` again. A full
+redraw is the fallback when a surface is missing, a menu or modal is open, or
+the scene changed wholesale (theme, wallpaper, brightness of the layout).
+
 So: **mutate state → set dirty → return.** Setting dirty with nothing
-changed just costs one redraw; forgetting it means the screen never updates
-and is the single most common bug in a new app.
+changed just costs one repaint of that window; forgetting it means the screen
+never updates and is the single most common bug in a new app. Do not assume
+`draw` runs once per screen frame — it runs when your window needs it.
 
 ### Hover
 

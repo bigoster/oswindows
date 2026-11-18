@@ -800,6 +800,46 @@ local function drawStartMenu(rootDC)
     rootDC:text(x + 20, py + ROW_H + 5, "Shut down", C.text)
 end
 
+--------------------------------------------------------------------------
+-- background cache and partial repaint
+--
+-- A frame no longer has to start from the wallpaper: the rows behind the
+-- windows are kept after a full draw, so the tray clock can repaint itself
+-- from that cache. Windows are composited from their own surfaces on top.
+--------------------------------------------------------------------------
+
+local backRows
+
+--- Remember the wallpaper + icon rows currently in the back buffer.
+function desktop.captureBack()
+    local _, H = gfx.size()
+    backRows = {}
+    for y = 1, H do backRows[y] = gfx.row(y) end
+end
+
+--- Splice cached background bytes into the damaged rectangle.
+function desktop.restoreRect(x, y, w, h)
+    if not backRows then return false end
+    local W, H = gfx.size()
+    if x < 0 then w = w + x; x = 0 end
+    if y < 0 then h = h + y; y = 0 end
+    if x + w > W then w = W - x end
+    if y + h > H then h = H - y end
+    if w < 1 or h < 1 then return false end
+    for row = y, y + h - 1 do
+        local line = backRows[row + 1]
+        if line then gfx.blit(x, row, line:sub(x + 1, x + w)) end
+    end
+    return true
+end
+
+--- Partial repaint needs the cached background rows, and is only safe
+--- when no overlay (Start menu or a modal desktop dialog) is painted
+--- above the normal taskbar/window layers.
+function desktop.canPartial()
+    return backRows ~= nil and not startMenuOpen and not desktop.dialogOpen()
+end
+
 function desktop.drawFront(rootDC)
     local W, H = gfx.size()
     local y = H - wm.TASKBAR_H
@@ -1168,7 +1208,17 @@ end
 -- clock / tray status
 ---------------------------------------------------------------------------
 
-function desktop.updateClock()
+--- Damage the clock/power end of the taskbar (about 96 px wide).
+-- Repainting just this strip means a clock tick no longer rebuilds the
+-- wallpaper, the icons and every open window.
+local function markTray()
+    local W, H = gfx.size()
+    local x = W - 96
+    if x < 0 then x = 0 end
+    wm.markRect(x, H - wm.TASKBAR_H, W - x, wm.TASKBAR_H)
+end
+
+function desktop.updateClock(checkPower)
     local text
     if settings.clockSeconds then
         text = os.date("%H:%M:%S")
@@ -1176,17 +1226,21 @@ function desktop.updateClock()
         text = os.date("%H:%M")
     end
 
-    local newPower = nil
-    if type(cee) == "table" and cee.hasPower then
-        local ok, has = pcall(cee.hasPower)
-        if ok then newPower = has end
+    local oldPower = powerState
+    if checkPower ~= false then
+        local newPower = nil
+        if type(cee) == "table" and cee.hasPower then
+            local ok, has = pcall(cee.hasPower)
+            if ok then newPower = has end
+        end
+        powerState = newPower
     end
-    powerState = newPower
 
     if text ~= clockText then
         clockText = text
-        mark()
+        markTray()
     end
+    if powerState ~= oldPower then markTray() end
 end
 
 function desktop.powerState() return powerState end
